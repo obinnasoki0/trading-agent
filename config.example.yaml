@@ -10,8 +10,9 @@ starting_cash: 10000
 commission: 0.0
 slippage_bps: 1.0
 
-# broker: paper (default, safe) | robinhood (unofficial, ToS-violating)
+# broker: paper (default) | alpaca (legal API) | robinhood_mcp (official) | robinhood (legacy/unofficial)
 broker: paper
+asset_class: equity            # equity | crypto  (crypto => genuine 24/7 on Alpaca)
 # Must be true AND you must pass --i-understand-the-risks to place real orders.
 allow_live: false
 
@@ -27,9 +28,11 @@ interval_seconds: 900          # seconds between decision cycles
 # --- News / sentiment tilt (current events, geopolitics, tech, banking) ----
 news:
   enabled: false               # true => blend headline sentiment with the technical signal
-  provider: stub               # stub (offline) | rss (free Google-News RSS, needs network)
+  provider: stub               # stub (offline) | rss (one-shot) | live (polled feed) | alpaca (push stream)
   weight: 0.3                   # 0..1 blend weight of news vs. technical (keep modest)
   limit: 20                     # headlines scored per symbol
+  poll_seconds: 60             # live feed: how often to poll for new headlines
+  max_age_seconds: 3600        # live feed: how long a headline stays "fresh"
 
 # --- Risk. Pick a profile OR specify the full `risk:` block below (not both). ---
 risk_profile: medium           # low | medium  (ignored if an explicit `risk:` block is given)

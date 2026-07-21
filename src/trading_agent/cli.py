@@ -18,6 +18,7 @@ import json
 import sys
 
 from . import __version__
+from . import brokers
 from .config import AgentConfig, load
 from .core.backtest import Backtester
 from .core.data import CSVData, SyntheticData, YFinanceData, make_window
@@ -25,6 +26,7 @@ from .core.engine import TradingEngine
 from .core.risk import RiskManager
 from .core.schedule import AutonomousRunner, Session
 from . import strategies
+from .signals.live import LiveNewsFeed
 from .signals.news import NewsSignalSource, RSSNewsProvider, StubNewsProvider
 from .strategies.blended import BlendedStrategy
 
@@ -38,9 +40,29 @@ def _data_provider(cfg: AgentConfig):
     return SyntheticData()
 
 
-def _news_source(cfg: AgentConfig) -> NewsSignalSource:
+def _news_source(cfg: AgentConfig):
+    """Return an object with .sentiment(symbol). Live feeds run in the background."""
+    if cfg.news.provider in ("live", "alpaca"):
+        feed = LiveNewsFeed(provider=RSSNewsProvider(), symbols=cfg.symbols,
+                            poll_seconds=cfg.news.poll_seconds,
+                            max_age_seconds=cfg.news.max_age_seconds, limit=cfg.news.limit)
+        if cfg.news.provider == "alpaca":
+            from .signals.live import AlpacaNewsStream
+            try:
+                stream = AlpacaNewsStream(feed, cfg.symbols)
+                threading_start(stream)  # push feed; falls back to polling if it fails
+            except Exception as exc:
+                print(f"Alpaca news stream unavailable ({exc}); falling back to polled RSS.")
+        feed.poll_once()  # prime the cache immediately
+        feed.start()
+        return feed
     provider = RSSNewsProvider() if cfg.news.provider == "rss" else StubNewsProvider()
     return NewsSignalSource(provider=provider, limit=cfg.news.limit)
+
+
+def threading_start(stream):
+    import threading
+    threading.Thread(target=stream.start, name="alpaca-news", daemon=True).start()
 
 
 def _build_strategy(cfg: AgentConfig, override: str | None = None):
@@ -52,14 +74,7 @@ def _build_strategy(cfg: AgentConfig, override: str | None = None):
 
 
 def _build_broker(cfg: AgentConfig, understood: bool):
-    if cfg.broker == "robinhood":
-        from .brokers.robinhood import RobinhoodBroker
-        live = cfg.allow_live and understood
-        if cfg.allow_live and not understood:
-            print("Refusing live trading without --i-understand-the-risks. Running dry-run.")
-        return RobinhoodBroker(allow_live=live, dry_run=not live)
-    from .brokers.paper import PaperBroker
-    return PaperBroker(cfg.starting_cash, cfg.commission, cfg.slippage_bps)
+    return brokers.build(cfg.broker, cfg, understood)
 
 
 def _mode(broker) -> str:

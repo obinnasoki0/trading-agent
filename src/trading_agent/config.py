@@ -15,9 +15,11 @@ from .core.risk import RiskLimits
 @dataclass
 class NewsConfig:
     enabled: bool = False
-    provider: str = "stub"     # stub | rss
+    provider: str = "stub"     # stub | rss | live (polled RSS) | alpaca (push stream)
     weight: float = 0.3        # blend weight vs. technical signal
     limit: int = 20            # headlines per symbol
+    poll_seconds: int = 60     # live feed poll cadence
+    max_age_seconds: int = 3600  # how long a headline stays "fresh"
 
 
 @dataclass
@@ -28,7 +30,8 @@ class AgentConfig:
     starting_cash: float = 10_000.0
     commission: float = 0.0
     slippage_bps: float = 1.0
-    broker: str = "paper"          # paper | robinhood
+    broker: str = "paper"          # paper | alpaca | robinhood_mcp | robinhood
+    asset_class: str = "equity"    # equity | crypto (crypto => 24/7 on Alpaca)
     allow_live: bool = False       # must be True to place real orders
     data_source: str = "synthetic"  # synthetic | yfinance | csv
     lookback_days: int = 400

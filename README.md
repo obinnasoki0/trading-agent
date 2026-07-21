@@ -17,13 +17,18 @@ adversarial and largely unpredictable. What this project actually gives you is
 *discipline*: a defined strategy executed consistently, with strict risk
 controls that cap losses. That is the only durable edge software provides.
 
-**Robinhood has no official trading API.** The included `RobinhoodBroker` uses
-the unofficial `robin_stocks` library, which talks to reverse-engineered private
-endpoints. Using it **violates Robinhood's Terms of Service** and can get your
-account **restricted or permanently locked**. It is gated behind multiple
-explicit opt-ins for that reason. If you want sanctioned automation, use a
-broker with a real API — **Alpaca**, **Interactive Brokers**, or **Tradier** —
-which you can add as a new adapter next to `robinhood.py`.
+**Pick a sanctioned broker.** Two legal, supported paths ship here:
+- **Alpaca** (`broker: alpaca`) — official REST API, free paper trading, and
+  **24/7 crypto**. The simplest legal way to run this autonomously.
+- **Robinhood Agentic Trading** (`broker: robinhood_mcp`) — Robinhood's
+  **official MCP server** (`https://agent.robinhood.com/mcp/trading`, OAuth).
+  Orders are sandboxed to a dedicated, separately-funded Agentic account; all
+  other accounts stay read-only. Equities only at launch. See the section below.
+
+The legacy `RobinhoodBroker` (`broker: robinhood`) uses the unofficial
+`robin_stocks` library — reverse-engineered endpoints that **violate Robinhood's
+ToS** and risk account lockout. It is kept only for reference and is
+**discouraged now that the official MCP exists**. Don't use it.
 
 **Always paper-trade and backtest first.** Prove a strategy over weeks of paper
 trading before risking a cent. Past backtest performance does not predict future
@@ -128,9 +133,9 @@ CLI ──► TradingEngine / Backtester
 - **RiskManager** (`core/risk.py`): the single gate. Position caps, stop-based
   sizing, daily-loss halt, and a drawdown kill switch. **This is the file that
   protects your capital.**
-- **Broker** (`brokers/`): `PaperBroker` (default, simulated) or
-  `RobinhoodBroker` (live, gated). One interface — swapping brokers changes
-  nothing else.
+- **Broker** (`brokers/`): `PaperBroker` (default), `AlpacaBroker` (stocks +
+  24/7 crypto), `RobinhoodMCPBroker` (official MCP), legacy `RobinhoodBroker`.
+  One interface — swapping brokers changes nothing else.
 - **Backtester** (`core/backtest.py`): event-driven, reuses the live risk/exec
   path, reports return, max drawdown, Sharpe, and a trade log.
 
@@ -141,17 +146,57 @@ conservative (10% max position, 1% risk/trade, 5% stop, 3% daily-loss halt,
 20% drawdown kill switch). Tune them deliberately — loosening them is how
 accounts blow up.
 
-## Going live (Robinhood) — the deliberately awkward path
+## Going live — Alpaca (recommended)
 
-You must do **all** of the following, or it stays in dry-run:
+1. `pip install -e ".[alpaca]"`
+2. Copy `.env.example` → `.env`, set `ALPACA_API_KEY` / `ALPACA_SECRET_KEY`
+   (paper keys first!).
+3. `config.yaml`: `broker: alpaca`. For **24/7 crypto** set `asset_class: crypto`,
+   `session: always`, and use pairs like `BTC/USD` in `symbols`.
+4. Paper by default. To go live: `allow_live: true` **and** run with
+   `--i-understand-the-risks`.
 
-1. `pip install -e ".[robinhood]"`
-2. Copy `.env.example` → `.env`, set `ROBINHOOD_USERNAME` / `ROBINHOOD_PASSWORD`.
-3. In `config.yaml`: `broker: robinhood` **and** `allow_live: true`.
-4. Run with the explicit flag: `trading-agent run --config config.yaml --i-understand-the-risks`
+```bash
+trading-agent loop --config config.yaml                       # paper, safe
+trading-agent loop --config config.yaml --i-understand-the-risks   # real money
+```
 
-Schedule `run` on a cron (e.g. every 15 min during market hours) once you've
-validated the strategy on paper. Prefer adding an Alpaca adapter instead.
+## Going live — Robinhood Agentic Trading (official MCP)
+
+Robinhood's sanctioned path. Two ways to use it:
+
+**A) Agent-driven (Robinhood's intended flow, easiest auth).** Connect the MCP to
+Claude Code and let the agent analyze + trade; OAuth is handled in the browser:
+
+```bash
+claude mcp add robinhood-trading --transport http https://agent.robinhood.com/mcp/trading
+# then /mcp in Claude Code -> select robinhood-trading -> authenticate
+```
+
+**B) Loop-driven (this project's `RobinhoodMCPBroker`).** Our deterministic,
+risk-managed engine drives the official MCP for unattended operation:
+
+1. Fund your dedicated **Agentic account** in the Robinhood app (this caps your
+   blast radius — only this account is tradable).
+2. `pip install -e ".[robinhood]"` (installs the `mcp` SDK).
+3. Provide an OAuth access token as `ROBINHOOD_MCP_TOKEN` (or use flow A).
+4. `config.yaml`: `broker: robinhood_mcp`, `allow_live: true`; run with
+   `--i-understand-the-risks`.
+5. **Verify tool names first:** the MCP's exact tool schema is confirmed at
+   runtime — `RobinhoodMCPBroker.list_tools()` prints them; map any differences
+   in `brokers/robinhood_mcp.py:TOOL_MAP`. Until verified, it stays dry-run.
+
+## Live news feed — trade on headlines as they publish
+
+Set `news.provider: live` (polled RSS) or `alpaca` (near-real-time push via
+Alpaca's news websocket). A background feed keeps fresh per-symbol sentiment that
+the `blended` strategy reads every cycle, and new headlines can fire event-driven
+decisions. Keep `weight` small and mind the latency caveat in `signals/live.py` —
+by the time a retail headline is public it's often already priced in.
+
+```yaml
+news: { enabled: true, provider: live, weight: 0.25, poll_seconds: 30 }
+```
 
 ## Tests
 
