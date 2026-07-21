@@ -45,14 +45,16 @@ from .base import Broker
 
 MCP_URL = os.getenv("ROBINHOOD_MCP_URL", "https://agent.robinhood.com/mcp/trading")
 
-# Map our operations -> Robinhood MCP tool names. VERIFY these against
-# `list_tools()` on the live server; placeholders reflect documented capabilities.
+# Map our operations -> Robinhood MCP tool names.
+# place/cancel names confirmed against the live server (2026-07); the read-side
+# names are best guesses that discover_and_map()/verify-robinhood will correct
+# automatically at runtime.
 TOOL_MAP = {
     "account": "get_account",
     "positions": "get_positions",
     "quote": "get_quote",
-    "place_order": "place_order",
-    "cancel_order": "cancel_order",
+    "place_order": "place_equity_order",    # confirmed live tool name
+    "cancel_order": "cancel_equity_order",  # confirmed live tool name
 }
 
 
@@ -186,12 +188,17 @@ class RobinhoodMCPBroker(Broker):
 # Each op lists (must-have-any, nice-to-have) keyword sets scored against a
 # tool's name + description. Highest score wins; ties prefer the shorter name.
 _OP_KEYWORDS = {
-    "cancel_order": (("cancel",), ("order",)),
-    "place_order": (("place", "submit", "buy", "sell", "trade"), ("order",)),
+    "cancel_order": (("cancel",), ("order", "equity")),
+    "place_order": (("place", "submit", "buy", "sell", "trade"), ("order", "equity")),
     "quote": (("quote", "price", "last_trade", "market_data"), ("get",)),
     "positions": (("position", "holding"), ("get", "list")),
     "account": (("account", "balance", "buying_power", "portfolio"), ("get",)),
 }
+
+# Order-side ops must never bind to options/crypto tools -- this engine trades
+# equities only on Robinhood (e.g. pick place_equity_order over place_option_order).
+_ORDER_OPS = {"place_order", "cancel_order"}
+_EXCLUDED_ASSET_WORDS = ("option", "crypto")
 
 
 def _auto_map(details: list[tuple[str, str]]) -> dict:
@@ -204,14 +211,17 @@ def _auto_map(details: list[tuple[str, str]]) -> dict:
         for name, desc in details:
             if name in used:
                 continue
+            lname = name.lower()
+            if op in _ORDER_OPS and any(w in lname for w in _EXCLUDED_ASSET_WORDS):
+                continue
+            if op == "place_order" and "cancel" in lname:
+                continue
             hay = f"{name} {desc}".lower()
             if not any(k in hay for k in must):
                 continue
-            score = sum(2 for k in must if k in name.lower()) \
+            score = sum(2 for k in must if k in lname) \
                 + sum(1 for k in must if k in hay) \
                 + sum(1 for k in nice if k in hay)
-            if op == "place_order" and "cancel" in name.lower():
-                continue
             if score > best_score or (score == best_score and best and len(name) < len(best)):
                 best, best_score = name, score
         if best:
