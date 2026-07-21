@@ -31,6 +31,24 @@ class RiskLimits:
     # Refuse to trade if cash would drop below this fraction of equity.
     min_cash_pct: float = 0.0
 
+    @classmethod
+    def low(cls) -> "RiskLimits":
+        """Conservative: small positions, tight stops, early halts."""
+        return cls(max_position_pct=0.05, risk_per_trade_pct=0.005, stop_loss_pct=0.04,
+                   max_daily_loss_pct=0.02, max_drawdown_pct=0.10,
+                   max_gross_exposure_pct=0.60, min_cash_pct=0.20)
+
+    @classmethod
+    def medium(cls) -> "RiskLimits":
+        """Balanced low-to-medium risk (the default posture for this agent)."""
+        return cls(max_position_pct=0.10, risk_per_trade_pct=0.01, stop_loss_pct=0.05,
+                   max_daily_loss_pct=0.03, max_drawdown_pct=0.15,
+                   max_gross_exposure_pct=0.90, min_cash_pct=0.10)
+
+    @classmethod
+    def from_profile(cls, name: str) -> "RiskLimits":
+        return {"low": cls.low, "medium": cls.medium}.get(name, cls.medium)()
+
 
 class RiskDecision:
     def __init__(self, approved: bool, order: Order | None, reason: str):

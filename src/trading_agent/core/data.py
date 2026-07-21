@@ -15,11 +15,19 @@ the data came from.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
+
+
+def _stable_seed(text: str) -> int:
+    """Process-independent seed. Builtin hash() is salted per run, which would
+    make 'reproducible' backtests silently non-reproducible."""
+    digest = hashlib.sha256(text.encode()).digest()
+    return int.from_bytes(digest[:4], "big")
 
 
 class DataProvider:
@@ -37,8 +45,7 @@ class SyntheticData(DataProvider):
 
     def history(self, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
         days = max(1, (end - start).days)
-        seed = abs(hash(symbol)) % (2**32)
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(_stable_seed(symbol))
 
         dt = 1 / 252
         mu, sigma = self.annual_drift, self.annual_vol

@@ -50,15 +50,61 @@ pip install -e ".[dev,yfinance,config]" # + real data + YAML config
 # List strategies
 trading-agent strategies
 
-# Backtest on synthetic data (no network needed)
+# Backtest on synthetic data (no network needed, fully reproducible)
 trading-agent backtest --strategy sma_crossover --symbol AAPL --days 750 --verbose
 
 # One paper decision step
 trading-agent run
+
+# Autonomous, unattended loop (paper by default). Ctrl-C to stop.
+trading-agent loop --config config.yaml
 ```
 
 Use real historical data by setting `data_source: yfinance` in `config.yaml`
 (and `pip install -e ".[yfinance]"`).
+
+## Autonomy: trading unattended ("no human authorization")
+
+`trading-agent loop` runs on a fixed cadence with **no human approval step** —
+its only gate is the *automated* risk kill switch. That combination (unattended
++ real money) is the highest-risk way to run this, so the automated safety rails
+are non-negotiable and tuned by your `risk_profile`.
+
+- **Sessions** (`session:` in config) decide *when* it acts:
+  - `equity` — US regular hours (09:30–16:00 ET, weekdays)
+  - `extended` — pre/post market (≈04:00–20:00 ET, weekdays)
+  - `always` — 24/7. **True round-the-clock trading only exists for crypto**;
+    US stocks, including Robinhood, are not 24/7.
+- **Cadence**: `interval_seconds` (default 900 = every 15 min).
+- Run it as a long-lived process (systemd, a container, `nohup`, tmux). It
+  auto-idles when the market is closed and resumes when it opens.
+
+```bash
+trading-agent loop --config config.yaml --interval 300   # decide every 5 min
+```
+
+## Reacting to current events (news + sentiment)
+
+Set `news.enabled: true` to blend headline sentiment (geopolitics, banking,
+industry, tech) with the technical signal:
+
+```
+final_strength = (1 - weight) * technical  +  weight * news_sentiment
+```
+
+- `provider: stub` — offline, deterministic (default; keeps tests/CI green).
+- `provider: rss` — free Google-News RSS per symbol (needs network, no API key).
+- Keep `weight` modest (≤0.3). **Honest caveat:** lexicon sentiment on headlines
+  is a weak, noisy signal — it can't read nuance or "priced-in" news. Treat it as
+  a small tilt, backtest any blend, and swap in a real NLP/news API
+  (`signals/news.py` is the extension point) before leaning on it.
+
+## Risk profiles
+
+Pick a posture with `risk_profile: low | medium`, or specify the full `risk:`
+block to override. Both keep you in low-to-medium-risk territory; `low` uses
+smaller positions (5%), tighter stops, a 10% drawdown kill switch, and a 20%
+cash floor.
 
 ## Architecture
 
@@ -74,8 +120,11 @@ CLI ──► TradingEngine / Backtester
 
 - **Strategy** (`strategies/`): pure `price history -> Signal` in [-1, 1]. It never
   sizes positions or touches the broker. Ships with `sma_crossover`,
-  `rsi_reversion`, `momentum`. Add your own and register it in
-  `strategies/__init__.py`.
+  `rsi_reversion`, `momentum`, and `blended` (technical + news). Add your own and
+  register it in `strategies/__init__.py`.
+- **Signals** (`signals/`): external inputs (news/sentiment) that tilt a strategy.
+- **Schedule** (`core/schedule.py`): market sessions + the unattended
+  `AutonomousRunner` loop.
 - **RiskManager** (`core/risk.py`): the single gate. Position caps, stop-based
   sizing, daily-loss halt, and a drawdown kill switch. **This is the file that
   protects your capital.**

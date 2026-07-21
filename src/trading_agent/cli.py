@@ -2,11 +2,13 @@
 
     trading-agent backtest --strategy sma_crossover --symbol AAPL --days 500
     trading-agent run      --config config.yaml            # one paper step
+    trading-agent loop     --config config.yaml            # autonomous, unattended
     trading-agent strategies
 
-Live trading is deliberately awkward: you must set broker=robinhood AND
-allow_live=true in config AND pass --i-understand-the-risks. Anything less
-runs in paper/dry-run.
+Autonomy: `loop` runs unattended, deciding on a fixed cadence with NO human
+approval step -- its only gate is the automated risk kill switch. Live Robinhood
+trading additionally requires broker=robinhood, allow_live=true, and
+--i-understand-the-risks. Anything less runs paper/dry-run.
 """
 
 from __future__ import annotations
@@ -18,10 +20,13 @@ import sys
 from . import __version__
 from .config import AgentConfig, load
 from .core.backtest import Backtester
-from .core.data import SyntheticData, YFinanceData, CSVData, make_window
+from .core.data import CSVData, SyntheticData, YFinanceData, make_window
 from .core.engine import TradingEngine
 from .core.risk import RiskManager
+from .core.schedule import AutonomousRunner, Session
 from . import strategies
+from .signals.news import NewsSignalSource, RSSNewsProvider, StubNewsProvider
+from .strategies.blended import BlendedStrategy
 
 
 def _data_provider(cfg: AgentConfig):
@@ -33,15 +38,45 @@ def _data_provider(cfg: AgentConfig):
     return SyntheticData()
 
 
+def _news_source(cfg: AgentConfig) -> NewsSignalSource:
+    provider = RSSNewsProvider() if cfg.news.provider == "rss" else StubNewsProvider()
+    return NewsSignalSource(provider=provider, limit=cfg.news.limit)
+
+
+def _build_strategy(cfg: AgentConfig, override: str | None = None):
+    base = strategies.build(override or cfg.strategy, **cfg.strategy_params)
+    if cfg.news.enabled:
+        return BlendedStrategy(base, _news_source(cfg),
+                               w_tech=1 - cfg.news.weight, w_news=cfg.news.weight)
+    return base
+
+
+def _build_broker(cfg: AgentConfig, understood: bool):
+    if cfg.broker == "robinhood":
+        from .brokers.robinhood import RobinhoodBroker
+        live = cfg.allow_live and understood
+        if cfg.allow_live and not understood:
+            print("Refusing live trading without --i-understand-the-risks. Running dry-run.")
+        return RobinhoodBroker(allow_live=live, dry_run=not live)
+    from .brokers.paper import PaperBroker
+    return PaperBroker(cfg.starting_cash, cfg.commission, cfg.slippage_bps)
+
+
+def _mode(broker) -> str:
+    return "LIVE" if broker.is_live and getattr(broker, "allow_live", False) else "PAPER/DRY-RUN"
+
+
 def cmd_strategies(_args) -> int:
     for name, cls in strategies.REGISTRY.items():
-        print(f"  {name:16s} {cls.__doc__.splitlines()[0] if cls.__doc__ else ''}")
+        doc = cls.__doc__.splitlines()[0] if cls.__doc__ else ""
+        print(f"  {name:16s} {doc}")
+    print("  blended          Blend any of the above with news sentiment (news.enabled: true)")
     return 0
 
 
 def cmd_backtest(args) -> int:
     cfg = load(args.config)
-    strat = strategies.build(args.strategy or cfg.strategy, **cfg.strategy_params)
+    strat = _build_strategy(cfg, args.strategy)
     risk = RiskManager(cfg.risk)
     provider = _data_provider(cfg)
     start, end = make_window(args.days)
@@ -61,27 +96,43 @@ def cmd_backtest(args) -> int:
 
 def cmd_run(args) -> int:
     cfg = load(args.config)
-    strat = strategies.build(cfg.strategy, **cfg.strategy_params)
+    strat = _build_strategy(cfg)
     risk = RiskManager(cfg.risk)
-    provider = _data_provider(cfg)
+    broker = _build_broker(cfg, args.i_understand_the_risks)
+    engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols, cfg.lookback_days)
 
-    if cfg.broker == "robinhood":
-        from .brokers.robinhood import RobinhoodBroker
-        live = cfg.allow_live and args.i_understand_the_risks
-        if cfg.allow_live and not args.i_understand_the_risks:
-            print("Refusing live trading without --i-understand-the-risks. Running dry-run.")
-        broker = RobinhoodBroker(allow_live=live, dry_run=not live)
-    else:
-        from .brokers.paper import PaperBroker
-        broker = PaperBroker(cfg.starting_cash, cfg.commission, cfg.slippage_bps)
-
-    engine = TradingEngine(broker, strat, risk, provider, cfg.symbols, cfg.lookback_days)
     actions = engine.step()
     acct = broker.account()
-    mode = "LIVE" if broker.is_live and getattr(broker, "allow_live", False) else "PAPER/DRY-RUN"
-    print(f"[{mode}] {strat.name} | equity=${acct.equity:,.2f} cash=${acct.cash:,.2f}")
+    print(f"[{_mode(broker)}] {strat.name} | equity=${acct.equity:,.2f} cash=${acct.cash:,.2f}")
     for a in actions or ["(no actions this step)"]:
         print(f"  {a}")
+    return 0
+
+
+def cmd_loop(args) -> int:
+    cfg = load(args.config)
+    strat = _build_strategy(cfg)
+    risk = RiskManager(cfg.risk)
+    broker = _build_broker(cfg, args.i_understand_the_risks)
+    engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols, cfg.lookback_days)
+
+    interval = args.interval if args.interval is not None else cfg.interval_seconds
+    session = Session(cfg.session)
+    runner = AutonomousRunner(engine, interval_seconds=interval, session=session,
+                              max_iterations=args.max_iterations)
+
+    print(f"[{_mode(broker)}] autonomous loop: {strat.name} | session={session.value} "
+          f"| every {interval}s | risk={cfg.risk_profile}")
+    print("  (unattended; automated risk kill switch is the only gate. Ctrl-C to stop.)")
+    try:
+        for ts, actions in runner.run():
+            stamp = ts.strftime("%Y-%m-%d %H:%M:%S")
+            acct = broker.account()
+            print(f"[{stamp}] equity=${acct.equity:,.2f}")
+            for a in actions:
+                print(f"    {a}")
+    except KeyboardInterrupt:
+        print("\nStopped by user.")
     return 0
 
 
@@ -101,6 +152,15 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--i-understand-the-risks", action="store_true",
                    help="Required to place REAL Robinhood orders (ToS-violating).")
     r.set_defaults(func=cmd_run)
+
+    lp = sub.add_parser("loop", help="Run the autonomous, unattended trading loop")
+    lp.add_argument("--config")
+    lp.add_argument("--interval", type=int, help="Seconds between cycles (overrides config)")
+    lp.add_argument("--max-iterations", type=int, dest="max_iterations",
+                    help="Stop after N cycles (for testing).")
+    lp.add_argument("--i-understand-the-risks", action="store_true",
+                    help="Required to place REAL Robinhood orders (ToS-violating).")
+    lp.set_defaults(func=cmd_loop)
 
     s = sub.add_parser("strategies", help="List available strategies")
     s.set_defaults(func=cmd_strategies)
