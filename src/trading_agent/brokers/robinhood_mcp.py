@@ -26,8 +26,8 @@ Two ways to use Robinhood Agentic Trading with this project
 --------------------
 The exact MCP *tool names/parameters* must be confirmed against the live server
 (they can change during beta). Call :meth:`list_tools` after authenticating and
-map them in ``TOOL_MAP`` below. Until then this adapter defaults to **dry-run**
-and will not place real orders. It also requires ``allow_live=True``.
+map them in ``TOOL_MAP`` below. This adapter defaults to **dry-run** and will
+not place real orders unless ``allow_live=True``.
 
 Requires the official MCP SDK:  pip install "trading-agent[robinhood]"  (mcp>=1.0)
 Auth token: set ROBINHOOD_MCP_TOKEN (an OAuth access token for the MCP), or use
@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import uuid
 from datetime import datetime
 
 from ..core.models import AccountState, Order, OrderStatus, Position, Side
@@ -46,15 +47,14 @@ from .base import Broker
 MCP_URL = os.getenv("ROBINHOOD_MCP_URL", "https://agent.robinhood.com/mcp/trading")
 
 # Map our operations -> Robinhood MCP tool names.
-# place/cancel names confirmed against the live server (2026-07); the read-side
-# names are best guesses that discover_and_map()/verify-robinhood will correct
-# automatically at runtime.
+# Confirmed against the live server (2026-07) via read-only calls to get_accounts,
+# get_portfolio, get_equity_positions, and get_equity_quotes.
 TOOL_MAP = {
-    "account": "get_account",
-    "positions": "get_positions",
-    "quote": "get_quote",
-    "place_order": "place_equity_order",    # confirmed live tool name
-    "cancel_order": "cancel_equity_order",  # confirmed live tool name
+    "account": "get_portfolio",
+    "positions": "get_equity_positions",
+    "quote": "get_equity_quotes",
+    "place_order": "place_equity_order",
+    "cancel_order": "cancel_equity_order",
 }
 
 
@@ -63,12 +63,14 @@ class RobinhoodMCPBroker(Broker):
     is_live = True
 
     def __init__(self, allow_live: bool = False, dry_run: bool = True,
-                 url: str | None = None, tool_map: dict | None = None):
+                 url: str | None = None, tool_map: dict | None = None,
+                 account_number: str | None = None):
         self.allow_live = allow_live
         self.dry_run = dry_run
         self.url = url or MCP_URL
         self.tool_map = tool_map or dict(TOOL_MAP)
         self._token = os.getenv("ROBINHOOD_MCP_TOKEN")
+        self._account_number = account_number
 
     # -- MCP plumbing -----------------------------------------------------
     def _headers(self) -> dict:
@@ -96,6 +98,24 @@ class RobinhoodMCPBroker(Broker):
     def _call(self, op: str, arguments: dict | None = None):
         tool = self.tool_map[op]
         return asyncio.run(self._call_async(tool, arguments))
+
+    def _resolve_account_number(self) -> str:
+        """Look up and cache the account_number to use for account-scoped calls.
+
+        get_portfolio / get_equity_positions / place_equity_order / cancel_equity_order
+        all require an account_number that this adapter is never handed directly, so we
+        discover it once via get_accounts and prefer the agentic_allowed=true account
+        (the only one this agent is permitted to act on)."""
+        if self._account_number:
+            return self._account_number
+        res = asyncio.run(self._call_async("get_accounts"))
+        accounts = _extract_obj(res).get("accounts", [])
+        if not accounts:
+            raise RuntimeError("get_accounts returned no Robinhood accounts.")
+        agentic = [a for a in accounts if a.get("agentic_allowed")]
+        chosen = (agentic or accounts)[0]
+        self._account_number = chosen["account_number"]
+        return self._account_number
 
     def list_tool_details(self) -> list[tuple[str, str]]:
         """Discover (name, description) for every tool the live MCP exposes."""
@@ -134,26 +154,34 @@ class RobinhoodMCPBroker(Broker):
     # NOTE: response parsing below is defensive and will need to match the live
     # tool output schema once verified via list_tools().
     def last_price(self, symbol: str) -> float:
-        res = self._call("quote", {"symbol": symbol})
-        return _extract_float(res, ("price", "last_price", "last_trade_price"))
+        res = self._call("quote", {"symbols": [symbol]})
+        for row in _extract_rows(res):
+            quote = row.get("quote") or row
+            for key in ("last_trade_price", "last_non_reg_trade_price"):
+                val = quote.get(key)
+                if val is not None:
+                    try:
+                        return float(val)
+                    except (TypeError, ValueError):
+                        continue
+        return 0.0
 
     def positions(self) -> dict[str, Position]:
-        res = self._call("positions")
+        res = self._call("positions", {"account_number": self._resolve_account_number()})
         out: dict[str, Position] = {}
         for row in _extract_rows(res):
             sym = row.get("symbol")
             qty = float(row.get("quantity", 0) or 0)
             if sym and qty:
-                out[sym] = Position(sym, qty, float(row.get("average_price", 0) or 0))
+                out[sym] = Position(sym, qty, float(row.get("average_buy_price", 0) or 0))
         return out
 
     def account(self) -> AccountState:
-        res = self._call("account")
+        res = self._call("account", {"account_number": self._resolve_account_number()})
         data = _extract_obj(res)
-        cash = float(data.get("buying_power", data.get("cash", 0)) or 0)
-        positions = self.positions()
-        equity = cash + sum(p.quantity * self.last_price(s) for s, p in positions.items())
-        return AccountState(cash=cash, equity=equity, positions=positions, timestamp=datetime.now())
+        cash = float(data.get("cash", 0) or 0)
+        equity = float(data.get("total_value", cash) or cash)
+        return AccountState(cash=cash, equity=equity, positions=self.positions(), timestamp=datetime.now())
 
     def submit(self, order: Order) -> Order:
         if self.dry_run or not self.allow_live:
@@ -164,11 +192,13 @@ class RobinhoodMCPBroker(Broker):
             return order
         try:
             res = self._call("place_order", {
+                "account_number": self._resolve_account_number(),
                 "symbol": order.symbol,
                 "side": order.side.value,
-                "quantity": round(order.quantity, 6),
+                "quantity": str(round(order.quantity, 6)),
                 "type": order.order_type.value,
-                **({"limit_price": order.limit_price} if order.limit_price else {}),
+                "ref_id": str(uuid.uuid4()),
+                **({"limit_price": str(order.limit_price)} if order.limit_price else {}),
             })
         except Exception as exc:  # pragma: no cover - network path
             order.status = OrderStatus.REJECTED
@@ -181,7 +211,10 @@ class RobinhoodMCPBroker(Broker):
         return order
 
     def cancel(self, broker_id: str) -> None:
-        self._call("cancel_order", {"order_id": broker_id})
+        self._call("cancel_order", {
+            "account_number": self._resolve_account_number(),
+            "order_id": broker_id,
+        })
 
 
 # -- auto-mapping: match discovered tool names to our operations -------------
@@ -248,15 +281,26 @@ def _result_payload(res):
     return {}
 
 
-def _extract_obj(res) -> dict:
-    payload = _result_payload(res)
+def _unwrap(payload):
+    """Peel off a top-level 'data' or 'result' envelope, if the payload is wrapped in one.
+
+    The live Robinhood MCP wraps every response as {"data": {...}, "guide": "..."};
+    "result" is kept as an alternate envelope key for other MCP servers/tool shapes."""
     if isinstance(payload, dict):
-        return payload.get("result", payload) if "result" in payload else payload
-    return {}
+        for key in ("data", "result"):
+            inner = payload.get(key)
+            if isinstance(inner, (dict, list)):
+                return inner
+    return payload
+
+
+def _extract_obj(res) -> dict:
+    payload = _unwrap(_result_payload(res))
+    return payload if isinstance(payload, dict) else {}
 
 
 def _extract_rows(res) -> list[dict]:
-    payload = _result_payload(res)
+    payload = _unwrap(_result_payload(res))
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
