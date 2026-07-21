@@ -1,0 +1,24 @@
+# Secrets -- NEVER commit broker credentials
+.env
+*.env
+robinhood.pickle
+*.pickle
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Data / outputs
+data/
+*.csv
+!tests/**/*.csv
+equity_*.png
+*.log

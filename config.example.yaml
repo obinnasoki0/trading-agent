@@ -1,0 +1,29 @@
+# Example config. Copy to config.yaml and edit. Pass with --config config.yaml.
+
+symbols: [AAPL, MSFT, SPY]
+strategy: sma_crossover        # sma_crossover | rsi_reversion | momentum
+strategy_params:
+  fast: 20
+  slow: 50
+
+starting_cash: 10000
+commission: 0.0
+slippage_bps: 1.0
+
+# broker: paper (default, safe) | robinhood (unofficial, ToS-violating)
+broker: paper
+# Must be true AND you must pass --i-understand-the-risks to place real orders.
+allow_live: false
+
+data_source: synthetic         # synthetic | yfinance | csv
+lookback_days: 400
+
+# --- Hard risk limits. These protect your capital; a strategy cannot override them. ---
+risk:
+  max_position_pct: 0.10       # <=10% of equity in any one name
+  risk_per_trade_pct: 0.01     # risk 1% of equity per trade (stop-based sizing)
+  stop_loss_pct: 0.05          # exit a position down 5% from entry
+  max_daily_loss_pct: 0.03     # halt new buys after a 3% down day
+  max_drawdown_pct: 0.20       # liquidate everything if 20% below peak equity
+  max_gross_exposure_pct: 1.0  # never more than 100% of equity deployed
+  min_cash_pct: 0.0            # keep this fraction of equity in cash
