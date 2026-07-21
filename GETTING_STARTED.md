@@ -6,6 +6,14 @@ risk-managed loop running on **your own computer**. Total time: ~15 minutes.
 > Everything below happens in the **Terminal application on your computer** —
 > not in a Claude chat window. Mac: press `Cmd+Space`, type `Terminal`, press
 > Enter. Windows: open **PowerShell** from the Start menu.
+>
+> **On Windows**, use these swaps throughout this guide:
+> - `python3` → `python`
+> - `bash setup.sh` → `.\setup.ps1`
+> - `source .venv/bin/activate` → `.\.venv\Scripts\Activate.ps1`
+>
+> If PowerShell refuses to run a script ("running scripts is disabled"), run
+> this once and answer `Y`: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
 ---
 
