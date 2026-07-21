@@ -177,6 +177,24 @@ def cmd_loop(args) -> int:
     return 0
 
 
+def cmd_login(args) -> int:
+    """One-time interactive Robinhood OAuth. Opens a browser, saves refreshable
+    tokens to a portable file you can move to an always-on server."""
+    from .brokers.robinhood_mcp import RobinhoodMCPBroker
+
+    broker = RobinhoodMCPBroker(token_path=args.token_path, interactive=True)
+    try:
+        tools = broker.login()
+    except Exception as exc:
+        print(f"Login failed: {exc}")
+        return 1
+    print(f"Success. The MCP exposes {len(tools)} tools.")
+    print(f"Token file: {broker._storage.path}")
+    print("Copy that file to your server (same path, or set ROBINHOOD_TOKEN_PATH) "
+          "to run the loop unattended. Guard it -- it holds your refresh token.")
+    return 0
+
+
 def cmd_verify_robinhood(args) -> int:
     """Connect to the official Robinhood MCP, discover + auto-map its tools, and
     do a read-only account fetch to confirm everything lines up. Run this once
@@ -234,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("strategies", help="List available strategies")
     s.set_defaults(func=cmd_strategies)
+
+    lg = sub.add_parser("login", help="One-time Robinhood OAuth (durable, refreshable tokens)")
+    lg.add_argument("--token-path", dest="token_path",
+                    help="Where to save the token file (default ~/.trading-agent/robinhood_oauth.json)")
+    lg.set_defaults(func=cmd_login)
 
     v = sub.add_parser("verify-robinhood",
                        help="Discover + auto-map the official Robinhood MCP tools")

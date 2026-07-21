@@ -1,0 +1,15 @@
+# Keeps the loop running and auto-restarts it (e.g. after a host reboot).
+#   docker compose up -d --build      # start in background
+#   docker compose logs -f            # watch it
+#   docker compose down               # stop
+#
+# Put your config.yaml and robinhood_oauth.json in ./data next to this file.
+services:
+  trading-agent:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    # Optional: a static bearer token instead of the OAuth file (short tests only).
+    # environment:
+    #   - ROBINHOOD_MCP_TOKEN=...

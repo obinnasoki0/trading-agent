@@ -184,13 +184,21 @@ risk-managed engine drives the official MCP for unattended operation:
 
 1. Fund your dedicated **Agentic account** in the Robinhood app (this caps your
    blast radius — only this account is tradable).
-2. `pip install -e ".[robinhood]"` (installs the `mcp` SDK).
-3. Provide an OAuth access token as `ROBINHOOD_MCP_TOKEN` (or use flow A).
+2. `pip install -e ".[robinhood]"` (installs the `mcp` SDK with OAuth support).
+3. **Authenticate once (durable):** `trading-agent login` opens a browser and
+   saves a *refreshable* token file. The loop refreshes its own access tokens
+   after that — no token pasting, no expiry babysitting. (A static
+   `ROBINHOOD_MCP_TOKEN` still works as an override for short tests, but it won't
+   refresh.)
 4. `config.yaml`: `broker: robinhood_mcp`, `allow_live: true`; run with
    `--i-understand-the-risks`.
-5. **Verify tool names first:** the MCP's exact tool schema is confirmed at
-   runtime — `RobinhoodMCPBroker.list_tools()` prints them; map any differences
-   in `brokers/robinhood_mcp.py:TOOL_MAP`. Until verified, it stays dry-run.
+5. **Verify the live tools first:** `trading-agent verify-robinhood` discovers +
+   auto-maps the MCP's real tool schema and does a read-only balance check.
+   Until verified, order-submit stays dry-run.
+
+For running this **24/7 on an always-on server** (so it keeps trading while your
+own devices are off), see **[DEPLOY.md](DEPLOY.md)** — Docker/systemd, moving the
+token file, and honest limits on how long "unattended" really lasts.
 
 ## Live news feed — trade on headlines as they publish
 

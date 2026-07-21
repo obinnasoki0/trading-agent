@@ -30,8 +30,12 @@ map them in ``TOOL_MAP`` below. This adapter defaults to **dry-run** and will
 not place real orders unless ``allow_live=True``.
 
 Requires the official MCP SDK:  pip install "trading-agent[robinhood]"  (mcp>=1.0)
-Auth token: set ROBINHOOD_MCP_TOKEN (an OAuth access token for the MCP), or use
-the agent-driven model in (1) which manages OAuth for you.
+
+Auth (durable, for unattended runs -- see robinhood_oauth.py):
+* `trading-agent login` once on a device with a browser -> tokens saved to a
+  portable file that auto-refreshes. Copy that file to your always-on server.
+* Or set ROBINHOOD_MCP_TOKEN to a static bearer token to override OAuth (short
+  tests only -- it won't refresh and will expire).
 """
 
 from __future__ import annotations
@@ -39,10 +43,12 @@ from __future__ import annotations
 import asyncio
 import os
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime
 
 from ..core.models import AccountState, Order, OrderStatus, Position, Side
 from .base import Broker
+from .robinhood_oauth import FileTokenStorage, build_oauth_provider
 
 MCP_URL = os.getenv("ROBINHOOD_MCP_URL", "https://agent.robinhood.com/mcp/trading")
 
@@ -64,40 +70,57 @@ class RobinhoodMCPBroker(Broker):
 
     def __init__(self, allow_live: bool = False, dry_run: bool = True,
                  url: str | None = None, tool_map: dict | None = None,
-                 account_number: str | None = None):
+                 account_number: str | None = None, token_path: str | None = None,
+                 interactive: bool = False):
         self.allow_live = allow_live
         self.dry_run = dry_run
         self.url = url or MCP_URL
         self.tool_map = tool_map or dict(TOOL_MAP)
+        # Static token (env) overrides OAuth -- handy for a short manual test.
         self._token = os.getenv("ROBINHOOD_MCP_TOKEN")
         self._account_number = account_number
+        # Durable OAuth: tokens persist here and auto-refresh for unattended runs.
+        self._storage = FileTokenStorage(token_path)
+        self.interactive = interactive
 
     # -- MCP plumbing -----------------------------------------------------
-    def _headers(self) -> dict:
-        if not self._token:
-            raise RuntimeError(
-                "No ROBINHOOD_MCP_TOKEN set. Either export an OAuth access token, "
-                "or use the agent-driven model (connect the MCP to Claude Code, "
-                "which handles OAuth for you)."
-            )
-        return {"Authorization": f"Bearer {self._token}"}
+    def _transport_auth(self) -> dict:
+        """kwargs for streamablehttp_client: static bearer, or the OAuth provider
+        that refreshes itself from the persisted refresh token."""
+        if self._token:
+            return {"headers": {"Authorization": f"Bearer {self._token}"}}
+        provider = build_oauth_provider(self.url, self._storage, interactive=self.interactive)
+        return {"auth": provider}
 
-    async def _call_async(self, tool: str, arguments: dict | None = None):
+    @asynccontextmanager
+    async def _open_session(self):
         try:
             from mcp import ClientSession
             from mcp.client.streamable_http import streamablehttp_client
         except ImportError as exc:  # pragma: no cover - optional dep
             raise RuntimeError('Install the MCP SDK: pip install "trading-agent[robinhood]"') from exc
 
-        async with streamablehttp_client(self.url, headers=self._headers()) as (read, write, _):
+        async with streamablehttp_client(self.url, **self._transport_auth()) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                result = await session.call_tool(tool, arguments or {})
-                return result
+                yield session
+
+    async def _call_async(self, tool: str, arguments: dict | None = None):
+        async with self._open_session() as session:
+            return await session.call_tool(tool, arguments or {})
 
     def _call(self, op: str, arguments: dict | None = None):
         tool = self.tool_map[op]
         return asyncio.run(self._call_async(tool, arguments))
+
+    def login(self) -> list[str]:
+        """Run the one-time interactive OAuth flow (opens a browser) and persist
+        tokens so the loop can refresh them unattended afterward."""
+        self.interactive = True
+        self._token = None  # force the OAuth path even if an env token is set
+        tools = self.list_tools()  # first connect triggers auth + token storage
+        print(f"Authorized. Tokens saved to {self._storage.path}")
+        return tools
 
     def _resolve_account_number(self) -> str:
         """Look up and cache the account_number to use for account-scoped calls.
@@ -120,13 +143,9 @@ class RobinhoodMCPBroker(Broker):
     def list_tool_details(self) -> list[tuple[str, str]]:
         """Discover (name, description) for every tool the live MCP exposes."""
         async def _run():
-            from mcp import ClientSession
-            from mcp.client.streamable_http import streamablehttp_client
-            async with streamablehttp_client(self.url, headers=self._headers()) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    tools = await session.list_tools()
-                    return [(t.name, getattr(t, "description", "") or "") for t in tools.tools]
+            async with self._open_session() as session:
+                tools = await session.list_tools()
+                return [(t.name, getattr(t, "description", "") or "") for t in tools.tools]
         return asyncio.run(_run())
 
     def list_tools(self) -> list[str]:

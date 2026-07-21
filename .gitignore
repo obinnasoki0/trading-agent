@@ -3,6 +3,9 @@
 *.env
 robinhood.pickle
 *.pickle
+robinhood_oauth.json
+.trading-agent/
+data/
 
 # Python
 __pycache__/

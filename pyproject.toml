@@ -17,7 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 yfinance = ["yfinance>=0.2"]
 alpaca = ["alpaca-py>=0.20"]
-robinhood = ["mcp>=1.0"]                # official Robinhood Agentic Trading MCP
+robinhood = ["mcp>=1.28"]               # official Robinhood MCP + built-in OAuth client
 robinhood-legacy = ["robin_stocks>=3.0"]  # unofficial, ToS-violating (discouraged)
 config = ["pyyaml>=6.0"]
 dev = ["pytest>=7.0"]
