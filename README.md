@@ -60,6 +60,10 @@ trading-agent strategies
 # Backtest on synthetic data (no network needed, fully reproducible)
 trading-agent backtest --strategy sma_crossover --symbol AAPL --days 750 --verbose
 
+# Portfolio backtest: ALL configured symbols on one shared, risk-gated account
+# (validates what the live loop actually does -- joint exposure/cash/drawdown caps)
+trading-agent backtest --strategy momentum --portfolio --days 750
+
 # One paper decision step
 trading-agent run
 

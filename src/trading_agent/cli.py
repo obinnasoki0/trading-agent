@@ -20,7 +20,7 @@ import sys
 from . import __version__
 from . import brokers
 from .config import AgentConfig, load
-from .core.backtest import Backtester
+from .core.backtest import Backtester, PortfolioBacktester
 from .core.data import CSVData, SyntheticData, YFinanceData, make_window
 from .core.engine import TradingEngine
 from .core.risk import RiskManager
@@ -104,12 +104,19 @@ def cmd_backtest(args) -> int:
     provider = _data_provider(cfg)
     start, end = make_window(args.days)
 
-    symbol = args.symbol or cfg.symbols[0]
-    data = provider.history(symbol, start, end)
-    bt = Backtester(strat, risk, cfg.starting_cash, cfg.commission, cfg.slippage_bps)
-    result = bt.run(symbol, data)
+    if args.portfolio:
+        data = {s: provider.history(s, start, end) for s in cfg.symbols}
+        bt = PortfolioBacktester(strat, risk, cfg.starting_cash, cfg.commission, cfg.slippage_bps)
+        result = bt.run(data)
+        label = f"portfolio {cfg.symbols}"
+    else:
+        symbol = args.symbol or cfg.symbols[0]
+        data = provider.history(symbol, start, end)
+        bt = Backtester(strat, risk, cfg.starting_cash, cfg.commission, cfg.slippage_bps)
+        result = bt.run(symbol, data)
+        label = f"{symbol} ({len(data)} bars)"
 
-    print(f"\nBacktest: {strat.name} on {symbol} ({len(data)} bars)")
+    print(f"\nBacktest: {strat.name} on {label}")
     print(json.dumps(result.summary(), indent=2))
     if args.verbose:
         for t in result.trades:
@@ -203,6 +210,8 @@ def build_parser() -> argparse.ArgumentParser:
     b = sub.add_parser("backtest", help="Backtest a strategy on historical/synthetic data")
     b.add_argument("--strategy"); b.add_argument("--symbol")
     b.add_argument("--days", type=int, default=500)
+    b.add_argument("--portfolio", action="store_true",
+                   help="Backtest all configured symbols on one shared, risk-gated account.")
     b.add_argument("--config"); b.add_argument("--verbose", action="store_true")
     b.set_defaults(func=cmd_backtest)
 
