@@ -1,0 +1,35 @@
+# Ready-to-use config for driving the OFFICIAL Robinhood Agentic Trading MCP
+# with the deterministic, risk-managed loop. Copy to config.yaml and edit.
+#
+# Prereqs (see README "Going live — Robinhood Agentic Trading"):
+#   1. Fund your dedicated Agentic account in the Robinhood app (this is your
+#      entire blast radius — only fund what you're willing to lose).
+#   2. pip install -e ".[alpaca,config]"   # alpaca = market data; config = YAML
+#   3. Provide auth: export ROBINHOOD_MCP_TOKEN=...   (OAuth access token)
+#   4. Verify + auto-map the live tools:   trading-agent verify-robinhood
+#   5. Only then set allow_live: true and run with --i-understand-the-risks.
+
+symbols: [AAPL, MSFT, SPY]     # equities only at MCP launch
+strategy: momentum
+strategy_params: { lookback: 90 }
+
+broker: robinhood_mcp          # the official, sanctioned endpoint
+asset_class: equity
+allow_live: false              # KEEP false until you've paper/backtest-validated
+
+# Data feed for signals (Robinhood MCP is execution; you still need price history).
+data_source: yfinance          # or alpaca market data
+
+# Autonomy
+session: equity                # equities aren't 24/7; use "extended" for pre/post
+interval_seconds: 900
+
+# Live news tilt (optional)
+news:
+  enabled: true
+  provider: live
+  weight: 0.25
+  poll_seconds: 60
+
+# Conservative risk posture. These hard caps gate every order the loop places.
+risk_profile: low              # low = 5% max position, 10% drawdown kill switch, 20% cash floor
