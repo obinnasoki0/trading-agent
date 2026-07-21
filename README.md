@@ -1,5 +1,7 @@
 # trading-agent
 
+[![CI](https://github.com/obinnasoki0/trading-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/obinnasoki0/trading-agent/actions/workflows/ci.yml)
+
 A modular, **risk-first** trading agent. Pluggable strategies and brokers, a
 backtester that shares the exact risk/execution path with live trading, and a
 hard risk manager you configure once and a strategy can never override.
@@ -197,6 +199,26 @@ by the time a retail headline is public it's often already priced in.
 ```yaml
 news: { enabled: true, provider: live, weight: 0.25, poll_seconds: 30 }
 ```
+
+**Event-driven mode** — react the instant a headline lands instead of waiting for
+the next timer tick. Add `--event-driven`: each fresh headline wakes the loop to
+evaluate just that symbol immediately (the risk caps still gate every order).
+
+```bash
+trading-agent loop --config config.yaml --event-driven
+```
+
+### Verifying the Robinhood MCP
+
+Once you have a token (or connected via Claude Code), confirm the live tool
+schema and auto-map it in one command — no code edits needed for name changes:
+
+```bash
+trading-agent verify-robinhood
+```
+
+It lists the server's real tools, auto-maps them to account/positions/quote/
+order operations, and does a read-only balance check. It never places an order.
 
 ## Tests
 

@@ -38,8 +38,10 @@ class TradingEngine:
             self._day = today
             self.risk.start_day(equity)
 
-    def step(self) -> list[str]:
-        """Run one decision cycle across all symbols. Returns a log of actions."""
+    def step(self, symbols: list[str] | None = None) -> list[str]:
+        """Run one decision cycle. ``symbols=None`` evaluates all configured
+        symbols; passing a subset (e.g. from a news event) evaluates just those.
+        The account-level kill switch always runs first regardless."""
         actions: list[str] = []
         account = self.broker.account()
         self._roll_day(account.equity)
@@ -51,45 +53,47 @@ class TradingEngine:
                              reason=f"KILL SWITCH: {kill}")
             return actions
 
-        start, end = make_window(self.lookback_days)
-        for symbol in self.symbols:
-            try:
-                history = self.data.history(symbol, start, end)
-            except Exception as exc:
-                actions.append(f"{symbol}: data error: {exc}")
-                continue
-            if history.empty:
-                continue
-
-            price = float(history["close"].iloc[-1])
-            # Paper broker prices itself from the data feed; live brokers ignore this.
-            if hasattr(self.broker, "set_price"):
-                self.broker.set_price(symbol, price)
-            account = self.broker.account()
-            pos = self.broker.positions().get(symbol)
-
-            # Stop-loss first.
-            if pos and self._entry_price.get(symbol) and \
-                    price <= self._entry_price[symbol] * (1 - self.risk.limits.stop_loss_pct):
-                self._submit(symbol, Side.SELL, pos.quantity, actions, reason="stop-loss")
-                continue
-
-            if len(history) < self.strategy.warmup:
-                continue
-
-            signal = self.strategy.generate(symbol, history)
-            if signal.strength > 0.05 and not pos:
-                qty = self.risk.size_for(symbol, price, account.equity)
-                order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=datetime.now())
-                decision = self.risk.review(order, price, account)
-                if decision.approved and decision.order:
-                    self._submit_order(decision.order, price, actions, signal.reason)
-                else:
-                    actions.append(f"{symbol}: buy vetoed ({decision.reason})")
-            elif signal.strength < -0.05 and pos:
-                self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
-
+        for symbol in (symbols if symbols is not None else self.symbols):
+            self._evaluate(symbol, actions)
         return actions
+
+    def _evaluate(self, symbol: str, actions: list[str]) -> None:
+        start, end = make_window(self.lookback_days)
+        try:
+            history = self.data.history(symbol, start, end)
+        except Exception as exc:
+            actions.append(f"{symbol}: data error: {exc}")
+            return
+        if history.empty:
+            return
+
+        price = float(history["close"].iloc[-1])
+        # Paper broker prices itself from the data feed; live brokers ignore this.
+        if hasattr(self.broker, "set_price"):
+            self.broker.set_price(symbol, price)
+        account = self.broker.account()
+        pos = self.broker.positions().get(symbol)
+
+        # Stop-loss first.
+        if pos and self._entry_price.get(symbol) and \
+                price <= self._entry_price[symbol] * (1 - self.risk.limits.stop_loss_pct):
+            self._submit(symbol, Side.SELL, pos.quantity, actions, reason="stop-loss")
+            return
+
+        if len(history) < self.strategy.warmup:
+            return
+
+        signal = self.strategy.generate(symbol, history)
+        if signal.strength > 0.05 and not pos:
+            qty = self.risk.size_for(symbol, price, account.equity)
+            order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=datetime.now())
+            decision = self.risk.review(order, price, account)
+            if decision.approved and decision.order:
+                self._submit_order(decision.order, price, actions, signal.reason)
+            else:
+                actions.append(f"{symbol}: buy vetoed ({decision.reason})")
+        elif signal.strength < -0.05 and pos:
+            self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
 
     def _submit(self, symbol, side, qty, actions, reason):
         order = Order(symbol, side, qty, OrderType.MARKET, created_at=datetime.now())

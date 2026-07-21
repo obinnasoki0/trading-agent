@@ -95,8 +95,8 @@ class RobinhoodMCPBroker(Broker):
         tool = self.tool_map[op]
         return asyncio.run(self._call_async(tool, arguments))
 
-    def list_tools(self) -> list[str]:
-        """Discover the real tool names exposed by the live MCP server."""
+    def list_tool_details(self) -> list[tuple[str, str]]:
+        """Discover (name, description) for every tool the live MCP exposes."""
         async def _run():
             from mcp import ClientSession
             from mcp.client.streamable_http import streamablehttp_client
@@ -104,8 +104,29 @@ class RobinhoodMCPBroker(Broker):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     tools = await session.list_tools()
-                    return [t.name for t in tools.tools]
+                    return [(t.name, getattr(t, "description", "") or "") for t in tools.tools]
         return asyncio.run(_run())
+
+    def list_tools(self) -> list[str]:
+        return [name for name, _ in self.list_tool_details()]
+
+    def discover_and_map(self, verbose: bool = True) -> dict:
+        """Connect, list the real tools, and auto-map them to our operations by
+        keyword. Updates ``self.tool_map`` in place and returns it.
+
+        This is what makes the adapter resilient to Robinhood's exact tool names
+        (which can shift during beta) without hand-editing code."""
+        details = self.list_tool_details()
+        mapping = _auto_map(details)
+        if verbose:
+            print("Robinhood MCP tools discovered:")
+            for name, desc in details:
+                print(f"  - {name}: {desc[:70]}")
+            print("Auto-mapped operations:")
+            for op, tool in mapping.items():
+                print(f"  {op:12s} -> {tool or '(unmapped!)'}")
+        self.tool_map.update({k: v for k, v in mapping.items() if v})
+        return self.tool_map
 
     # -- Broker interface -------------------------------------------------
     # NOTE: response parsing below is defensive and will need to match the live
@@ -159,6 +180,44 @@ class RobinhoodMCPBroker(Broker):
 
     def cancel(self, broker_id: str) -> None:
         self._call("cancel_order", {"order_id": broker_id})
+
+
+# -- auto-mapping: match discovered tool names to our operations -------------
+# Each op lists (must-have-any, nice-to-have) keyword sets scored against a
+# tool's name + description. Highest score wins; ties prefer the shorter name.
+_OP_KEYWORDS = {
+    "cancel_order": (("cancel",), ("order",)),
+    "place_order": (("place", "submit", "buy", "sell", "trade"), ("order",)),
+    "quote": (("quote", "price", "last_trade", "market_data"), ("get",)),
+    "positions": (("position", "holding"), ("get", "list")),
+    "account": (("account", "balance", "buying_power", "portfolio"), ("get",)),
+}
+
+
+def _auto_map(details: list[tuple[str, str]]) -> dict:
+    mapping: dict[str, str] = {}
+    used: set[str] = set()
+    # Resolve cancel before place so "cancel_order" isn't grabbed by "order".
+    for op in ("cancel_order", "place_order", "quote", "positions", "account"):
+        must, nice = _OP_KEYWORDS[op]
+        best, best_score = None, 0
+        for name, desc in details:
+            if name in used:
+                continue
+            hay = f"{name} {desc}".lower()
+            if not any(k in hay for k in must):
+                continue
+            score = sum(2 for k in must if k in name.lower()) \
+                + sum(1 for k in must if k in hay) \
+                + sum(1 for k in nice if k in hay)
+            if op == "place_order" and "cancel" in name.lower():
+                continue
+            if score > best_score or (score == best_score and best and len(name) < len(best)):
+                best, best_score = name, score
+        if best:
+            mapping[op] = best
+            used.add(best)
+    return mapping
 
 
 # -- tolerant parsing helpers (MCP tool results wrap content variously) ------

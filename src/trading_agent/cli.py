@@ -40,12 +40,20 @@ def _data_provider(cfg: AgentConfig):
     return SyntheticData()
 
 
-def _news_source(cfg: AgentConfig):
-    """Return an object with .sentiment(symbol). Live feeds run in the background."""
+def _news_source(cfg: AgentConfig, event_queue=None):
+    """Return an object with .sentiment(symbol). Live feeds run in the background.
+
+    If ``event_queue`` is given and the provider is live/streaming, each fresh
+    headline pushes its symbol onto the queue so the loop can react immediately.
+    """
     if cfg.news.provider in ("live", "alpaca"):
+        on_news = None
+        if event_queue is not None:
+            on_news = lambda symbol, _hs: event_queue.put(symbol)  # noqa: E731
         feed = LiveNewsFeed(provider=RSSNewsProvider(), symbols=cfg.symbols,
                             poll_seconds=cfg.news.poll_seconds,
-                            max_age_seconds=cfg.news.max_age_seconds, limit=cfg.news.limit)
+                            max_age_seconds=cfg.news.max_age_seconds, limit=cfg.news.limit,
+                            on_news=on_news)
         if cfg.news.provider == "alpaca":
             from .signals.live import AlpacaNewsStream
             try:
@@ -65,10 +73,10 @@ def threading_start(stream):
     threading.Thread(target=stream.start, name="alpaca-news", daemon=True).start()
 
 
-def _build_strategy(cfg: AgentConfig, override: str | None = None):
+def _build_strategy(cfg: AgentConfig, override: str | None = None, news_source=None):
     base = strategies.build(override or cfg.strategy, **cfg.strategy_params)
     if cfg.news.enabled:
-        return BlendedStrategy(base, _news_source(cfg),
+        return BlendedStrategy(base, news_source or _news_source(cfg),
                                w_tech=1 - cfg.news.weight, w_news=cfg.news.weight)
     return base
 
@@ -126,18 +134,29 @@ def cmd_run(args) -> int:
 
 def cmd_loop(args) -> int:
     cfg = load(args.config)
-    strat = _build_strategy(cfg)
     risk = RiskManager(cfg.risk)
     broker = _build_broker(cfg, args.i_understand_the_risks)
+
+    # Event-driven mode: a fresh headline wakes the loop to trade that symbol now.
+    event_queue = None
+    news_source = None
+    event_driven = args.event_driven and cfg.news.enabled and cfg.news.provider in ("live", "alpaca")
+    if event_driven:
+        import queue as _queue
+        event_queue = _queue.Queue()
+        news_source = _news_source(cfg, event_queue=event_queue)
+
+    strat = _build_strategy(cfg, news_source=news_source)
     engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols, cfg.lookback_days)
 
     interval = args.interval if args.interval is not None else cfg.interval_seconds
     session = Session(cfg.session)
     runner = AutonomousRunner(engine, interval_seconds=interval, session=session,
-                              max_iterations=args.max_iterations)
+                              max_iterations=args.max_iterations, event_queue=event_queue)
 
+    trigger = "news-event or " if event_driven else ""
     print(f"[{_mode(broker)}] autonomous loop: {strat.name} | session={session.value} "
-          f"| every {interval}s | risk={cfg.risk_profile}")
+          f"| {trigger}every {interval}s | risk={cfg.risk_profile}")
     print("  (unattended; automated risk kill switch is the only gate. Ctrl-C to stop.)")
     try:
         for ts, actions in runner.run():
@@ -148,6 +167,31 @@ def cmd_loop(args) -> int:
                 print(f"    {a}")
     except KeyboardInterrupt:
         print("\nStopped by user.")
+    return 0
+
+
+def cmd_verify_robinhood(args) -> int:
+    """Connect to the official Robinhood MCP, discover + auto-map its tools, and
+    do a read-only account fetch to confirm everything lines up. Run this once
+    after you have a ROBINHOOD_MCP_TOKEN before enabling live trading."""
+    from .brokers.robinhood_mcp import RobinhoodMCPBroker
+
+    broker = RobinhoodMCPBroker()
+    try:
+        broker.discover_and_map(verbose=True)
+    except Exception as exc:
+        print(f"\nCould not reach the Robinhood MCP: {exc}")
+        print("Set ROBINHOOD_MCP_TOKEN (or connect via `claude mcp add robinhood-trading ...`).")
+        return 1
+    try:
+        acct = broker.account()
+        print(f"\nRead-only check OK: cash=${acct.cash:,.2f} equity=${acct.equity:,.2f} "
+              f"positions={len(acct.positions)}")
+    except Exception as exc:
+        print(f"\nTool mapping needs adjustment (account fetch failed): {exc}")
+        print("Edit brokers/robinhood_mcp.py:TOOL_MAP with the names printed above.")
+        return 1
+    print("\nRobinhood MCP verified. It stays dry-run until allow_live + --i-understand-the-risks.")
     return 0
 
 
@@ -173,12 +217,18 @@ def build_parser() -> argparse.ArgumentParser:
     lp.add_argument("--interval", type=int, help="Seconds between cycles (overrides config)")
     lp.add_argument("--max-iterations", type=int, dest="max_iterations",
                     help="Stop after N cycles (for testing).")
+    lp.add_argument("--event-driven", action="store_true", dest="event_driven",
+                    help="React immediately to fresh news (needs news.provider live/alpaca).")
     lp.add_argument("--i-understand-the-risks", action="store_true",
-                    help="Required to place REAL Robinhood orders (ToS-violating).")
+                    help="Required to place REAL orders on a live broker.")
     lp.set_defaults(func=cmd_loop)
 
     s = sub.add_parser("strategies", help="List available strategies")
     s.set_defaults(func=cmd_strategies)
+
+    v = sub.add_parser("verify-robinhood",
+                       help="Discover + auto-map the official Robinhood MCP tools")
+    v.set_defaults(func=cmd_verify_robinhood)
     return p
 
 

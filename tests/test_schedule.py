@@ -24,7 +24,7 @@ class _FakeEngine:
     def __init__(self):
         self.calls = 0
 
-    def step(self):
+    def step(self, symbols=None):
         self.calls += 1
         return [f"step {self.calls}"]
 

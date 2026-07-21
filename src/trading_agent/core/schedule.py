@@ -14,6 +14,7 @@ Sessions:
 
 from __future__ import annotations
 
+import queue
 import time
 from datetime import datetime, time as dtime
 from enum import Enum
@@ -62,7 +63,7 @@ class AutonomousRunner:
 
     def __init__(self, engine, interval_seconds: int = 900,
                  session: Session = Session.EQUITY, max_iterations: int | None = None,
-                 sleeper=time.sleep, clock=None):
+                 sleeper=time.sleep, clock=None, event_queue: "queue.Queue | None" = None):
         self.engine = engine
         self.interval = interval_seconds
         self.session = session
@@ -70,24 +71,50 @@ class AutonomousRunner:
         self._sleep = sleeper
         self._clock = clock or (lambda: datetime.now(_ET) if _ET else datetime.now())
         self._stop = False
+        # When set, a fresh item (a symbol) wakes the loop early to evaluate just
+        # that symbol -- event-driven trading on news as it publishes.
+        self.event_queue = event_queue
 
     def stop(self) -> None:
         self._stop = True
 
+    def _wait(self) -> list[str] | None:
+        """Sleep until the next timed cycle, or wake early on a queued event.
+
+        Returns the symbols to evaluate next (from events), or None for a normal
+        full timed cycle."""
+        if self.event_queue is None:
+            if not self._stop:
+                self._sleep(self.interval)
+            return None
+        try:
+            first = self.event_queue.get(timeout=self.interval)
+        except queue.Empty:
+            return None
+        symbols = {first}
+        while True:  # drain any other events that arrived together
+            try:
+                symbols.add(self.event_queue.get_nowait())
+            except queue.Empty:
+                break
+        return sorted(symbols)
+
     def run(self):
-        """Blocking autonomous loop. Yields the action log from each cycle."""
+        """Blocking autonomous loop. Yields (timestamp, action log) per cycle."""
         iterations = 0
+        pending: list[str] | None = None  # symbols for this cycle; None = all
         while not self._stop:
             if self.max_iterations is not None and iterations >= self.max_iterations:
                 break
             now = self._clock()
             if is_market_open(self.session, now):
-                actions = self.engine.step()
+                actions = self.engine.step(pending)
+                if pending is not None:
+                    actions = [f"(event) {a}" for a in actions] or [f"(event) {pending}: no action"]
                 yield now, actions
             else:
                 yield now, ["(market closed; idle)"]
             iterations += 1
             if self.max_iterations is not None and iterations >= self.max_iterations:
                 break
-            if not self._stop:
-                self._sleep(self.interval)
+            pending = self._wait()
