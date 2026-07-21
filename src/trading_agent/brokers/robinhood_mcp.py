@@ -252,6 +252,20 @@ _OP_KEYWORDS = {
 _ORDER_OPS = {"place_order", "cancel_order"}
 _EXCLUDED_ASSET_WORDS = ("option", "crypto")
 
+# quote/positions must also stay equity-scoped -- otherwise keyword-score ties
+# (e.g. get_equity_quotes vs get_index_quotes) can resolve to the wrong asset
+# class purely on the "shorter name wins" tiebreak.
+_ASSET_SCOPED_OPS = {"quote", "positions"}
+_NON_EQUITY_ASSET_WORDS = ("option", "crypto", "index")
+
+# Tools that keyword-match an op's vocabulary only because their *description*
+# cross-references the real tool (e.g. get_accounts says "route buying-power
+# questions through get_portfolio", which falsely inflates its own "account"
+# score) -- exclude them by name rather than trying to out-tune the scorer.
+_OP_NAME_DENYLIST = {
+    "account": {"get_accounts"},  # lists multiple accounts; not one account's balance
+}
+
 
 def _auto_map(details: list[tuple[str, str]]) -> dict:
     mapping: dict[str, str] = {}
@@ -264,7 +278,11 @@ def _auto_map(details: list[tuple[str, str]]) -> dict:
             if name in used:
                 continue
             lname = name.lower()
+            if name in _OP_NAME_DENYLIST.get(op, ()):
+                continue
             if op in _ORDER_OPS and any(w in lname for w in _EXCLUDED_ASSET_WORDS):
+                continue
+            if op in _ASSET_SCOPED_OPS and any(w in lname for w in _NON_EQUITY_ASSET_WORDS):
                 continue
             if op == "place_order" and "cancel" in lname:
                 continue
