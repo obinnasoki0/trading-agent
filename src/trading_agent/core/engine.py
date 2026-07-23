@@ -22,13 +22,17 @@ from .risk import RiskManager
 
 class TradingEngine:
     def __init__(self, broker: Broker, strategy: Strategy, risk: RiskManager,
-                 data: DataProvider, symbols: list[str], lookback_days: int = 400):
+                 data: DataProvider, symbols: list[str], lookback_days: int = 400,
+                 max_positions: int = 0):
         self.broker = broker
         self.strategy = strategy
         self.risk = risk
         self.data = data
         self.symbols = symbols
         self.lookback_days = lookback_days
+        # 0 = evaluate/buy every symbol independently; >0 = rank the universe and
+        # hold at most this many names (cross-sectional selection).
+        self.max_positions = max_positions
         self._entry_price: dict[str, float] = {}
         self._day: str | None = None
 
@@ -41,7 +45,11 @@ class TradingEngine:
     def step(self, symbols: list[str] | None = None) -> list[str]:
         """Run one decision cycle. ``symbols=None`` evaluates all configured
         symbols; passing a subset (e.g. from a news event) evaluates just those.
-        The account-level kill switch always runs first regardless."""
+        The account-level kill switch always runs first regardless.
+
+        With ``max_positions > 0`` and a full scan, candidates are ranked and
+        only the strongest are opened (up to the cap) -- cross-sectional
+        selection over a universe."""
         actions: list[str] = []
         account = self.broker.account()
         self._roll_day(account.equity)
@@ -53,52 +61,99 @@ class TradingEngine:
                              reason=f"KILL SWITCH: {kill}")
             return actions
 
-        for symbol in (symbols if symbols is not None else self.symbols):
-            self._evaluate(symbol, actions)
+        universe = symbols if symbols is not None else self.symbols
+        if self.max_positions and symbols is None:
+            self._ranked_step(universe, actions)
+        else:
+            for symbol in universe:
+                self._evaluate(symbol, actions)
         return actions
 
-    def _evaluate(self, symbol: str, actions: list[str]) -> None:
+    def _load(self, symbol: str, actions: list[str]):
         start, end = make_window(self.lookback_days)
         try:
             history = self.data.history(symbol, start, end)
         except Exception as exc:
             actions.append(f"{symbol}: data error: {exc}")
-            return
+            return None
         if history.empty:
-            return
-
+            return None
         price = float(history["close"].iloc[-1])
-        # Paper broker prices itself from the data feed; live brokers ignore this.
-        if hasattr(self.broker, "set_price"):
+        if hasattr(self.broker, "set_price"):  # paper broker prices from the feed
             self.broker.set_price(symbol, price)
-        account = self.broker.account()
+        return history, price
+
+    def _handle_exit(self, symbol: str, price: float, actions: list[str]) -> bool:
+        """Stop-loss / take-profit for a held position. Returns True if it sold."""
         pos = self.broker.positions().get(symbol)
-
-        # Exits first: stop-loss caps the downside, take-profit locks in gains.
         entry = self._entry_price.get(symbol)
-        if pos and entry:
-            if price <= entry * (1 - self.risk.limits.stop_loss_pct):
-                self._submit(symbol, Side.SELL, pos.quantity, actions, reason="stop-loss")
-                return
-            tp = self.risk.limits.take_profit_pct
-            if tp > 0 and price >= entry * (1 + tp):
-                self._submit(symbol, Side.SELL, pos.quantity, actions, reason="take-profit")
-                return
+        if not (pos and entry):
+            return False
+        if price <= entry * (1 - self.risk.limits.stop_loss_pct):
+            self._submit(symbol, Side.SELL, pos.quantity, actions, reason="stop-loss")
+            return True
+        tp = self.risk.limits.take_profit_pct
+        if tp > 0 and price >= entry * (1 + tp):
+            self._submit(symbol, Side.SELL, pos.quantity, actions, reason="take-profit")
+            return True
+        return False
 
+    def _try_buy(self, symbol, price, signal, actions) -> bool:
+        account = self.broker.account()
+        qty = self.risk.size_for(symbol, price, account.equity) * getattr(signal, "size_mult", 1.0)
+        order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=datetime.now())
+        decision = self.risk.review(order, price, account)
+        if decision.approved and decision.order:
+            self._submit_order(decision.order, price, actions, signal.reason)
+            return True
+        return False
+
+    def _evaluate(self, symbol: str, actions: list[str]) -> None:
+        loaded = self._load(symbol, actions)
+        if loaded is None:
+            return
+        history, price = loaded
+        pos = self.broker.positions().get(symbol)
+        if pos and self._handle_exit(symbol, price, actions):
+            return
         if len(history) < self.strategy.warmup:
             return
-
         signal = self.strategy.generate(symbol, history)
         if signal.strength > 0.05 and not pos:
-            qty = self.risk.size_for(symbol, price, account.equity) * getattr(signal, "size_mult", 1.0)
-            order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=datetime.now())
-            decision = self.risk.review(order, price, account)
-            if decision.approved and decision.order:
-                self._submit_order(decision.order, price, actions, signal.reason)
-            else:
-                actions.append(f"{symbol}: buy vetoed ({decision.reason})")
+            if not self._try_buy(symbol, price, signal, actions):
+                actions.append(f"{symbol}: buy vetoed")
         elif signal.strength < -0.05 and pos:
             self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
+
+    def _ranked_step(self, universe: list[str], actions: list[str]) -> None:
+        """Scan the universe, handle exits, then open the top-ranked buys up to
+        the open-slot budget (max_positions minus current holdings)."""
+        candidates = []  # (strength, symbol, price, signal)
+        for symbol in universe:
+            loaded = self._load(symbol, actions)
+            if loaded is None:
+                continue
+            history, price = loaded
+            pos = self.broker.positions().get(symbol)
+            if pos and self._handle_exit(symbol, price, actions):
+                continue
+            if len(history) < self.strategy.warmup:
+                continue
+            signal = self.strategy.generate(symbol, history)
+            if signal.strength < -0.05 and pos:
+                self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
+            elif signal.strength > 0.05 and not pos:
+                candidates.append((signal.strength, symbol, price, signal))
+
+        slots = max(0, self.max_positions - len(self.broker.positions()))
+        candidates.sort(key=lambda c: c[0], reverse=True)  # strongest conviction first
+        opened = 0
+        for _strength, symbol, price, signal in candidates[:slots]:
+            if self._try_buy(symbol, price, signal, actions):
+                opened += 1
+        if opened == 0:
+            actions.append(f"scanned {len(universe)}: {len(candidates)} qualified, "
+                           f"{slots} slot(s) open, none filled")
 
     def _submit(self, symbol, side, qty, actions, reason):
         order = Order(symbol, side, qty, OrderType.MARKET, created_at=datetime.now())

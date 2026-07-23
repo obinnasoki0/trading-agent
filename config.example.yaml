@@ -1,10 +1,19 @@
 # Example config. Copy to config.yaml and edit. Pass with --config config.yaml.
 
 symbols: [AAPL, MSFT, SPY]
-strategy: sma_crossover        # sma_crossover | rsi_reversion | momentum
+strategy: sma_crossover        # sma_crossover | rsi_reversion | momentum | scorecard
 strategy_params:
   fast: 20
   slow: 50
+
+# --- Universe scanning (optional) ------------------------------------------
+# Instead of `symbols`, point at a broad candidate pool; the agent ranks the
+# whole pool each cycle and holds only the top `max_positions` that qualify.
+# Preset names: largecap | sp500 | crypto. Or give your own list / CSV string.
+# universe: largecap
+# max_positions: 5             # hold at most 5 names (defaults to 5 if a universe is set)
+# NOTE: free data rate-limits on big scans -- keep universes in the tens-to-low-
+# hundreds, or move to a paid/batch feed for "everything".
 
 starting_cash: 10000
 commission: 0.0

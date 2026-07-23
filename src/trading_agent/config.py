@@ -32,6 +32,10 @@ class FundamentalsConfig:
 @dataclass
 class AgentConfig:
     symbols: list[str] = field(default_factory=lambda: ["AAPL", "MSFT", "SPY"])
+    # Optional broad candidate pool (preset name, list, or CSV). When set it
+    # replaces `symbols`, and the agent ranks it and holds at most max_positions.
+    universe: str | list | None = None
+    max_positions: int = 0         # 0 = no cap; N = hold at most N names
     strategy: str = "sma_crossover"
     strategy_params: dict = field(default_factory=dict)
     starting_cash: float = 10_000.0
@@ -84,6 +88,13 @@ def load(path: str | None = None) -> AgentConfig:
         tiers = [RiskTier(min_equity=float(spec.get("min_equity", 0)),
                           limits=_limits_from_spec(spec))
                  for spec in raw.pop("risk_tiers", [])]
+        # A universe becomes the candidate pool; default to holding 5 names if a
+        # position cap wasn't set, so it doesn't try to buy the whole list.
+        if raw.get("universe"):
+            from .core.universe import resolve
+            raw["symbols"] = resolve(raw["universe"])
+            if not raw.get("max_positions"):
+                raw["max_positions"] = 5
         return AgentConfig(risk=risk, news=news, fundamentals=fundamentals,
                            risk_tiers=tiers, **raw)
     return AgentConfig()
