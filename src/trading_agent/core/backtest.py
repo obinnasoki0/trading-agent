@@ -124,11 +124,17 @@ class Backtester(_ExecMixin):
                 equity_points.append((ts, self.broker.account().equity))
                 continue
 
-            # 2) Stop-loss on the open position.
+            # 2) Exits on the open position: stop-loss, then take-profit.
             pos = self.broker.positions().get(symbol)
-            if pos and self._entry_price.get(symbol):
-                if price <= self._entry_price[symbol] * (1 - self.risk.limits.stop_loss_pct):
+            entry = self._entry_price.get(symbol)
+            if pos and entry:
+                tp = self.risk.limits.take_profit_pct
+                if price <= entry * (1 - self.risk.limits.stop_loss_pct):
                     self._exit(symbol, price, ts, trades, reason="stop-loss")
+                    equity_points.append((ts, self.broker.account().equity))
+                    continue
+                if tp > 0 and price >= entry * (1 + tp):
+                    self._exit(symbol, price, ts, trades, reason="take-profit")
                     equity_points.append((ts, self.broker.account().equity))
                     continue
 
@@ -195,10 +201,15 @@ class PortfolioBacktester(_ExecMixin):
                 price = float(df.loc[ts, "close"])
                 pos = self.broker.positions().get(sym)
 
-                if pos and self._entry_price.get(sym) and \
-                        price <= self._entry_price[sym] * (1 - self.risk.limits.stop_loss_pct):
-                    self._exit(sym, price, ts, trades, reason="stop-loss")
-                    continue
+                entry = self._entry_price.get(sym)
+                if pos and entry:
+                    tp = self.risk.limits.take_profit_pct
+                    if price <= entry * (1 - self.risk.limits.stop_loss_pct):
+                        self._exit(sym, price, ts, trades, reason="stop-loss")
+                        continue
+                    if tp > 0 and price >= entry * (1 + tp):
+                        self._exit(sym, price, ts, trades, reason="take-profit")
+                        continue
 
                 window = df.loc[:ts]
                 if len(window) < self.strategy.warmup:

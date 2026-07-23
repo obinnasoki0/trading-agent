@@ -30,24 +30,36 @@ class RiskLimits:
     max_gross_exposure_pct: float = 1.0
     # Refuse to trade if cash would drop below this fraction of equity.
     min_cash_pct: float = 0.0
+    # Take profit: exit a position once it's up this much from entry (0 = off).
+    take_profit_pct: float = 0.0
 
     @classmethod
     def low(cls) -> "RiskLimits":
         """Conservative: small positions, tight stops, early halts."""
         return cls(max_position_pct=0.05, risk_per_trade_pct=0.005, stop_loss_pct=0.04,
                    max_daily_loss_pct=0.02, max_drawdown_pct=0.10,
-                   max_gross_exposure_pct=0.60, min_cash_pct=0.20)
+                   max_gross_exposure_pct=0.60, min_cash_pct=0.20, take_profit_pct=0.10)
 
     @classmethod
     def medium(cls) -> "RiskLimits":
         """Balanced low-to-medium risk (the default posture for this agent)."""
         return cls(max_position_pct=0.10, risk_per_trade_pct=0.01, stop_loss_pct=0.05,
                    max_daily_loss_pct=0.03, max_drawdown_pct=0.15,
-                   max_gross_exposure_pct=0.90, min_cash_pct=0.10)
+                   max_gross_exposure_pct=0.90, min_cash_pct=0.10, take_profit_pct=0.08)
+
+    @classmethod
+    def aggressive(cls) -> "RiskLimits":
+        """VERY high risk: large concentrated positions, fast profit-taking.
+        Sane only at a tiny balance you can fully afford to lose -- never scale
+        this to a real account."""
+        return cls(max_position_pct=0.60, risk_per_trade_pct=0.05, stop_loss_pct=0.04,
+                   max_daily_loss_pct=0.20, max_drawdown_pct=0.40,
+                   max_gross_exposure_pct=1.0, min_cash_pct=0.0, take_profit_pct=0.05)
 
     @classmethod
     def from_profile(cls, name: str) -> "RiskLimits":
-        return {"low": cls.low, "medium": cls.medium}.get(name, cls.medium)()
+        return {"low": cls.low, "medium": cls.medium,
+                "aggressive": cls.aggressive}.get(name, cls.medium)()
 
 
 class RiskDecision:
@@ -60,12 +72,31 @@ class RiskDecision:
         return f"RiskDecision(approved={self.approved}, reason={self.reason!r})"
 
 
+@dataclass
+class RiskTier:
+    """Above ``min_equity``, use these limits. Lets the agent automatically
+    de-risk as the account grows (e.g. tiny balance = aggressive, $100+ = tamer)."""
+    min_equity: float
+    limits: RiskLimits
+
+
 class RiskManager:
-    def __init__(self, limits: RiskLimits | None = None):
-        self.limits = limits or RiskLimits()
+    def __init__(self, limits: RiskLimits | None = None,
+                 tiers: list[RiskTier] | None = None):
+        self.base_limits = limits or RiskLimits()
+        # Tiers sorted ascending; the highest one whose min_equity <= equity wins.
+        self.tiers = sorted(tiers or [], key=lambda t: t.min_equity)
+        self.limits = self.base_limits
         self._peak_equity: float | None = None
         self._day_open_equity: float | None = None
         self.halted = False
+
+    def _select_tier(self, equity: float) -> None:
+        chosen = self.base_limits
+        for tier in self.tiers:
+            if equity >= tier.min_equity:
+                chosen = tier.limits
+        self.limits = chosen
 
     # -- daily / drawdown bookkeeping ------------------------------------
     def start_day(self, equity: float) -> None:
@@ -73,6 +104,7 @@ class RiskManager:
         self.halted = False
 
     def observe_equity(self, equity: float) -> None:
+        self._select_tier(equity)  # pick the risk limits for the current balance
         self._peak_equity = equity if self._peak_equity is None else max(self._peak_equity, equity)
         if self._day_open_equity is None:
             self._day_open_equity = equity

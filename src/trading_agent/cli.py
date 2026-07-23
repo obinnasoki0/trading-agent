@@ -73,12 +73,27 @@ def threading_start(stream):
     threading.Thread(target=stream.start, name="alpaca-news", daemon=True).start()
 
 
+def _fundamentals_source(cfg: AgentConfig):
+    from .signals.fundamentals import (
+        FundamentalsSignalSource,
+        StubFundamentals,
+        YFinanceFundamentals,
+    )
+    provider = YFinanceFundamentals() if cfg.fundamentals.provider == "yfinance" else StubFundamentals()
+    return FundamentalsSignalSource(provider=provider)
+
+
 def _build_strategy(cfg: AgentConfig, override: str | None = None, news_source=None):
     base = strategies.build(override or cfg.strategy, **cfg.strategy_params)
-    if cfg.news.enabled:
-        return BlendedStrategy(base, news_source or _news_source(cfg),
-                               w_tech=1 - cfg.news.weight, w_news=cfg.news.weight)
-    return base
+    if not cfg.news.enabled and not cfg.fundamentals.enabled:
+        return base
+    news = (news_source or _news_source(cfg)) if cfg.news.enabled else None
+    fundamentals = _fundamentals_source(cfg) if cfg.fundamentals.enabled else None
+    w_news = cfg.news.weight if cfg.news.enabled else 0.0
+    w_fund = cfg.fundamentals.weight if cfg.fundamentals.enabled else 0.0
+    return BlendedStrategy(base, news=news, fundamentals=fundamentals,
+                           w_tech=max(0.0, 1 - w_news - w_fund),
+                           w_news=w_news, w_fund=w_fund)
 
 
 def _build_broker(cfg: AgentConfig, understood: bool):
@@ -100,7 +115,7 @@ def cmd_strategies(_args) -> int:
 def cmd_backtest(args) -> int:
     cfg = load(args.config)
     strat = _build_strategy(cfg, args.strategy)
-    risk = RiskManager(cfg.risk)
+    risk = RiskManager(cfg.risk, tiers=cfg.risk_tiers)
     provider = _data_provider(cfg)
     start, end = make_window(args.days)
 
@@ -127,7 +142,7 @@ def cmd_backtest(args) -> int:
 def cmd_run(args) -> int:
     cfg = load(args.config)
     strat = _build_strategy(cfg)
-    risk = RiskManager(cfg.risk)
+    risk = RiskManager(cfg.risk, tiers=cfg.risk_tiers)
     broker = _build_broker(cfg, args.i_understand_the_risks)
     engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols, cfg.lookback_days)
 
@@ -141,7 +156,7 @@ def cmd_run(args) -> int:
 
 def cmd_loop(args) -> int:
     cfg = load(args.config)
-    risk = RiskManager(cfg.risk)
+    risk = RiskManager(cfg.risk, tiers=cfg.risk_tiers)
     broker = _build_broker(cfg, args.i_understand_the_risks)
 
     # Event-driven mode: a fresh headline wakes the loop to trade that symbol now.

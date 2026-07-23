@@ -74,11 +74,16 @@ class TradingEngine:
         account = self.broker.account()
         pos = self.broker.positions().get(symbol)
 
-        # Stop-loss first.
-        if pos and self._entry_price.get(symbol) and \
-                price <= self._entry_price[symbol] * (1 - self.risk.limits.stop_loss_pct):
-            self._submit(symbol, Side.SELL, pos.quantity, actions, reason="stop-loss")
-            return
+        # Exits first: stop-loss caps the downside, take-profit locks in gains.
+        entry = self._entry_price.get(symbol)
+        if pos and entry:
+            if price <= entry * (1 - self.risk.limits.stop_loss_pct):
+                self._submit(symbol, Side.SELL, pos.quantity, actions, reason="stop-loss")
+                return
+            tp = self.risk.limits.take_profit_pct
+            if tp > 0 and price >= entry * (1 + tp):
+                self._submit(symbol, Side.SELL, pos.quantity, actions, reason="take-profit")
+                return
 
         if len(history) < self.strategy.warmup:
             return

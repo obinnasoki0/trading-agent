@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import asdict, dataclass, field
 
-from .core.risk import RiskLimits
+from .core.risk import RiskLimits, RiskTier
 
 
 @dataclass
@@ -20,6 +20,13 @@ class NewsConfig:
     limit: int = 20            # headlines per symbol
     poll_seconds: int = 60     # live feed poll cadence
     max_age_seconds: int = 3600  # how long a headline stays "fresh"
+
+
+@dataclass
+class FundamentalsConfig:
+    enabled: bool = False
+    provider: str = "stub"     # stub (offline) | yfinance (free, flaky)
+    weight: float = 0.2        # blend weight vs. technical signal (keep modest)
 
 
 @dataclass
@@ -38,12 +45,25 @@ class AgentConfig:
     # Autonomy: how the unattended loop behaves.
     session: str = "equity"        # equity | extended | always (crypto/24-7)
     interval_seconds: int = 900    # seconds between autonomous decision cycles
-    risk_profile: str = "medium"   # low | medium (used if `risk` not given explicitly)
+    risk_profile: str = "medium"   # low | medium | aggressive (if `risk` not explicit)
     risk: RiskLimits = field(default_factory=lambda: RiskLimits.medium())
+    # Equity-based tiers: automatically switch limits as the balance grows.
+    risk_tiers: list = field(default_factory=list)
     news: NewsConfig = field(default_factory=NewsConfig)
+    fundamentals: FundamentalsConfig = field(default_factory=FundamentalsConfig)
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+
+def _limits_from_spec(spec: dict) -> RiskLimits:
+    """Build a tier's RiskLimits from a profile name plus any field overrides."""
+    limits = RiskLimits.from_profile(spec["profile"]) if "profile" in spec else RiskLimits.medium()
+    fields = set(RiskLimits.__dataclass_fields__)
+    for key, val in spec.items():
+        if key in fields:
+            setattr(limits, key, val)
+    return limits
 
 
 def load(path: str | None = None) -> AgentConfig:
@@ -55,9 +75,15 @@ def load(path: str | None = None) -> AgentConfig:
         with open(path) as fh:
             raw = yaml.safe_load(fh) or {}
         news = NewsConfig(**raw.pop("news", {})) if "news" in raw else NewsConfig()
+        fundamentals = (FundamentalsConfig(**raw.pop("fundamentals", {}))
+                        if "fundamentals" in raw else FundamentalsConfig())
         if "risk" in raw:
             risk = RiskLimits(**raw.pop("risk"))
         else:
             risk = RiskLimits.from_profile(raw.get("risk_profile", "medium"))
-        return AgentConfig(risk=risk, news=news, **raw)
+        tiers = [RiskTier(min_equity=float(spec.get("min_equity", 0)),
+                          limits=_limits_from_spec(spec))
+                 for spec in raw.pop("risk_tiers", [])]
+        return AgentConfig(risk=risk, news=news, fundamentals=fundamentals,
+                           risk_tiers=tiers, **raw)
     return AgentConfig()

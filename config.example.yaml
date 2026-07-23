@@ -34,8 +34,17 @@ news:
   poll_seconds: 60             # live feed: how often to poll for new headlines
   max_age_seconds: 3600        # live feed: how long a headline stays "fresh"
 
+# --- Fundamentals tilt (company quality: growth, margins, valuation) --------
+# A quality filter on top of the technical + news read. Fundamentals move slowly,
+# so keep the weight small; it damps trades in deteriorating names and boosts
+# healthy ones. "In sync with technicals" = this blend, not magic.
+fundamentals:
+  enabled: false               # true => blend fundamental quality into the signal
+  provider: stub               # stub (offline) | yfinance (free, occasionally flaky)
+  weight: 0.2                   # 0..1 blend weight (keep modest)
+
 # --- Risk. Pick a profile OR specify the full `risk:` block below (not both). ---
-risk_profile: medium           # low | medium  (ignored if an explicit `risk:` block is given)
+risk_profile: medium           # low | medium | aggressive  (aggressive = 60% positions!)
 
 # Explicit hard limits (uncomment to override the profile). A strategy can
 # never loosen these — they are what keep you at low-to-medium risk.
@@ -43,7 +52,16 @@ risk_profile: medium           # low | medium  (ignored if an explicit `risk:` b
 #   max_position_pct: 0.10       # <=10% of equity in any one name
 #   risk_per_trade_pct: 0.01     # risk 1% of equity per trade (stop-based sizing)
 #   stop_loss_pct: 0.05          # exit a position down 5% from entry
+#   take_profit_pct: 0.08        # sell once a position is up 8% (0 = disabled)
 #   max_daily_loss_pct: 0.03     # halt new buys after a 3% down day
 #   max_drawdown_pct: 0.15       # liquidate everything if 15% below peak equity
 #   max_gross_exposure_pct: 0.90 # never more than 90% of equity deployed
 #   min_cash_pct: 0.10           # always keep 10% in cash
+
+# Equity-based risk tiers: automatically switch limits as the balance grows.
+# Below the first tier, `risk_profile`/`risk` applies. Example: run aggressive
+# while tiny, then auto-de-risk to 15% positions once the account reaches $100.
+# risk_tiers:
+#   - min_equity: 100
+#     profile: medium            # start from this profile...
+#     max_position_pct: 0.15     # ...then override specific limits
