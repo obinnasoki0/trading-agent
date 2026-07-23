@@ -1,0 +1,36 @@
+# 24/7 CRYPTO config -- runs around the clock on Alpaca (crypto never closes).
+# Copy to config.yaml and edit. Requires a free Alpaca account (separate from
+# Robinhood, which can't trade crypto via its Agentic MCP yet).
+#
+# Setup:
+#   1. Sign up at https://alpaca.markets (free). Create API keys.
+#   2. In your shell:  $env:ALPACA_API_KEY="..."; $env:ALPACA_SECRET_KEY="..."
+#   3. pip install -e ".[alpaca,config]"
+#   4. Paper first (allow_live: false). Alpaca gives free crypto paper trading.
+
+# Alpaca crypto pairs (note the slash format).
+symbols: [BTC/USD, ETH/USD, SOL/USD, LTC/USD]
+strategy: momentum
+strategy_params: { lookback: 20 }
+
+broker: alpaca
+asset_class: crypto            # 24/7 trading; uses Alpaca crypto endpoints
+allow_live: false             # KEEP false until you've watched paper trading
+
+data_source: alpaca           # crypto price bars from Alpaca (matches order symbols)
+
+# Autonomy -- crypto is always open, so run the clock around.
+session: always               # 24/7, no market-hours gating
+interval_seconds: 300         # decide every 5 min
+
+# News tilt works for crypto (BTC/ETH headlines). Fundamentals do NOT apply to
+# crypto (no earnings/P/E), so leave them off.
+news:         { enabled: true, provider: live, weight: 0.25 }
+fundamentals: { enabled: false }
+
+# Risk. Crypto is far more volatile than stocks -- size DOWN, not up. Wider
+# stops, but smaller positions. Do not run the 'aggressive' profile on crypto.
+risk_profile: low
+# risk_tiers:
+#   - min_equity: 100
+#     profile: low

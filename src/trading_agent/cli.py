@@ -32,6 +32,9 @@ from .strategies.blended import BlendedStrategy
 
 
 def _data_provider(cfg: AgentConfig):
+    if cfg.data_source == "alpaca":
+        from .core.data import AlpacaData
+        return AlpacaData(asset_class=cfg.asset_class)
     if cfg.data_source == "yfinance":
         return YFinanceData()
     if cfg.data_source == "csv":

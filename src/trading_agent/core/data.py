@@ -99,6 +99,48 @@ class YFinanceData(DataProvider):
         return df[["open", "high", "low", "close", "volume"]]
 
 
+class AlpacaData(DataProvider):
+    """Historical bars from Alpaca -- the feed for 24/7 crypto and for equities.
+
+    Uses the SAME symbol format as the AlpacaBroker (crypto like ``BTC/USD``), so
+    signal data and execution line up. Crypto data is public (no keys needed);
+    equities use your Alpaca keys (free IEX feed).
+    """
+
+    def __init__(self, asset_class: str = "crypto"):
+        self.asset_class = asset_class
+
+    def history(self, symbol: str, start: datetime, end: datetime) -> pd.DataFrame:
+        try:
+            from alpaca.data.timeframe import TimeFrame
+        except ImportError as exc:  # pragma: no cover - optional dep
+            raise RuntimeError('Install the Alpaca SDK: pip install "trading-agent[alpaca]"') from exc
+
+        key, secret = os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY")
+        if self.asset_class == "crypto":
+            from alpaca.data.historical import CryptoHistoricalDataClient
+            from alpaca.data.requests import CryptoBarsRequest
+            client = CryptoHistoricalDataClient(key, secret) if key else CryptoHistoricalDataClient()
+            req = CryptoBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                                    start=start, end=end)
+            bars = client.get_crypto_bars(req)
+        else:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockBarsRequest
+            client = StockHistoricalDataClient(key, secret)
+            req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+                                   start=start, end=end)
+            bars = client.get_stock_bars(req)
+
+        df = bars.df
+        if df is None or df.empty:
+            raise RuntimeError(f"No Alpaca data for {symbol}.")
+        if isinstance(df.index, pd.MultiIndex):  # (symbol, timestamp) -> timestamp
+            df = df.xs(symbol, level=0)
+        df.columns = [str(c).lower() for c in df.columns]
+        return df[["open", "high", "low", "close", "volume"]]
+
+
 def default_provider() -> DataProvider:
     """Pick a provider from the TRADING_DATA_SOURCE env var.
 
