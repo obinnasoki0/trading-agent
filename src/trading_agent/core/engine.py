@@ -90,7 +90,7 @@ class TradingEngine:
 
         signal = self.strategy.generate(symbol, history)
         if signal.strength > 0.05 and not pos:
-            qty = self.risk.size_for(symbol, price, account.equity)
+            qty = self.risk.size_for(symbol, price, account.equity) * getattr(signal, "size_mult", 1.0)
             order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=datetime.now())
             decision = self.risk.review(order, price, account)
             if decision.approved and decision.order:

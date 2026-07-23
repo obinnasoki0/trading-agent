@@ -5,12 +5,14 @@ from __future__ import annotations
 from .base import Strategy
 from .momentum import Momentum
 from .rsi_reversion import RsiReversion
+from .scorecard import ScorecardStrategy
 from .sma_crossover import SmaCrossover
 
 REGISTRY: dict[str, type[Strategy]] = {
     SmaCrossover.name: SmaCrossover,
     RsiReversion.name: RsiReversion,
     Momentum.name: Momentum,
+    ScorecardStrategy.name: ScorecardStrategy,
 }
 
 

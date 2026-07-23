@@ -54,6 +54,10 @@ class Signal:
     strength: float
     timestamp: datetime
     reason: str = ""
+    # Conviction-based sizing: the engine multiplies the risk-sized quantity by
+    # this (1.0 = full size, 0.5 = half). Lets a scorecard trade smaller on
+    # weaker setups. Default 1.0 keeps every existing strategy unchanged.
+    size_mult: float = 1.0
 
     def __post_init__(self) -> None:
         self.strength = max(-1.0, min(1.0, float(self.strength)))

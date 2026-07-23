@@ -64,10 +64,10 @@ class _ExecMixin:
     ``self._entry_price`` on the instance.
     """
 
-    def _act(self, symbol, strength, price, ts, account, trades):
+    def _act(self, symbol, strength, price, ts, account, trades, size_mult=1.0):
         pos = self.broker.positions().get(symbol)
         if strength > 0.05 and not pos:
-            qty = self.risk.size_for(symbol, price, account.equity)
+            qty = self.risk.size_for(symbol, price, account.equity) * size_mult
             if qty <= 0:
                 return
             order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=ts)
@@ -141,7 +141,8 @@ class Backtester(_ExecMixin):
             # 3) Strategy signal -> sized order -> risk gate -> fill.
             if len(window) >= self.strategy.warmup:
                 signal = self.strategy.generate(symbol, window)
-                self._act(symbol, signal.strength, price, ts, account, trades)
+                self._act(symbol, signal.strength, price, ts, account, trades,
+                          getattr(signal, "size_mult", 1.0))
 
             equity_points.append((ts, self.broker.account().equity))
 
@@ -215,7 +216,8 @@ class PortfolioBacktester(_ExecMixin):
                 if len(window) < self.strategy.warmup:
                     continue
                 signal = self.strategy.generate(sym, window)
-                self._act(sym, signal.strength, price, ts, self.broker.account(), trades)
+                self._act(sym, signal.strength, price, ts, self.broker.account(), trades,
+                          getattr(signal, "size_mult", 1.0))
 
             equity_points.append((ts, self.broker.account().equity))
 

@@ -87,7 +87,15 @@ def _fundamentals_source(cfg: AgentConfig):
 
 
 def _build_strategy(cfg: AgentConfig, override: str | None = None, news_source=None):
-    base = strategies.build(override or cfg.strategy, **cfg.strategy_params)
+    name = override or cfg.strategy
+    if name == "scorecard":
+        from .strategies.scorecard import ScorecardStrategy
+        news = (news_source or _news_source(cfg)) if cfg.news.enabled else None
+        fundamentals = _fundamentals_source(cfg) if cfg.fundamentals.enabled else None
+        return ScorecardStrategy(news=news, fundamentals=fundamentals,
+                                 stop_loss_pct=cfg.risk.stop_loss_pct,
+                                 **cfg.strategy_params)
+    base = strategies.build(name, **cfg.strategy_params)
     if not cfg.news.enabled and not cfg.fundamentals.enabled:
         return base
     news = (news_source or _news_source(cfg)) if cfg.news.enabled else None
