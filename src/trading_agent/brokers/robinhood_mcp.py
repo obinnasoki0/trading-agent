@@ -100,7 +100,11 @@ class RobinhoodMCPBroker(Broker):
         except ImportError as exc:  # pragma: no cover - optional dep
             raise RuntimeError('Install the MCP SDK: pip install "trading-agent[robinhood]"') from exc
 
-        async with streamablehttp_client(self.url, **self._transport_auth()) as (read, write, _):
+        # terminate_on_close=False: Robinhood's MCP returns HTTP 400 on the
+        # session-terminate DELETE, which is harmless but spams the logs. Skip it
+        # and let the server expire the session on its own.
+        async with streamablehttp_client(self.url, terminate_on_close=False,
+                                         **self._transport_auth()) as (read, write, _):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
