@@ -208,10 +208,9 @@ class RobinhoodMCPBroker(Broker):
 
     def submit(self, order: Order) -> Order:
         if self.dry_run or not self.allow_live:
+            # Marker the engine recognizes to log a single clear "[DRY-RUN] would..." line.
             order.status = OrderStatus.REJECTED
             order.broker_id = "dry-run"
-            print(f"[DRY-RUN] would {order.side.value} {order.quantity:.4f} {order.symbol} "
-                  f"via Robinhood MCP")
             return order
         try:
             res = self._call("place_order", {

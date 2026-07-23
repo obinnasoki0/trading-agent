@@ -101,7 +101,16 @@ class TradingEngine:
 
     def _submit_order(self, order: Order, price: float, actions: list[str], reason: str):
         filled = self.broker.submit(order)
-        tag = "LIVE" if self.broker.is_live else "PAPER"
+        # A live broker held in dry-run marks orders with broker_id "dry-run".
+        # Tag honestly so a dry-run never prints "[LIVE]".
+        is_dry = filled.broker_id == "dry-run"
+        if not self.broker.is_live:
+            tag = "PAPER"
+        elif is_dry:
+            tag = "DRY-RUN"
+        else:
+            tag = "LIVE"
+
         if filled.status.value == "filled":
             if order.side is Side.BUY and filled.filled_price:
                 self._entry_price[order.symbol] = filled.filled_price
@@ -109,6 +118,9 @@ class TradingEngine:
                 self._entry_price.pop(order.symbol, None)
             actions.append(f"[{tag}] {order.side.value} {filled.filled_quantity:.4f} "
                            f"{order.symbol} @ {filled.filled_price or price:.2f} ({reason})")
+        elif is_dry:
+            actions.append(f"[{tag}] would {order.side.value} {order.quantity:.4f} "
+                           f"{order.symbol} @ {price:.2f} ({reason})")
         else:
             actions.append(f"[{tag}] {order.side.value} {order.symbol} not filled: "
                            f"{filled.status.value} {filled.broker_id or ''}")
