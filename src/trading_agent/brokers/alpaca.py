@@ -112,7 +112,14 @@ class AlpacaBroker(Broker):
         order.broker_id = str(getattr(resp, "id", "")) or None
         filled = getattr(resp, "filled_avg_price", None)
         order.filled_price = float(filled) if filled else None
-        order.filled_quantity = float(getattr(resp, "filled_qty", order.quantity) or order.quantity)
+        # Market orders fill asynchronously, so filled_qty is usually 0 at submit
+        # time. Report the submitted quantity so logs reflect what was ordered.
+        raw_qty = getattr(resp, "filled_qty", None)
+        try:
+            filled_qty = float(raw_qty) if raw_qty is not None else 0.0
+        except (TypeError, ValueError):
+            filled_qty = 0.0
+        order.filled_quantity = filled_qty or round(order.quantity, 6)
         order.status = OrderStatus.FILLED if order.broker_id else OrderStatus.REJECTED
         return order
 
