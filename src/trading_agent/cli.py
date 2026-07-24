@@ -194,8 +194,13 @@ def cmd_loop(args) -> int:
     try:
         for ts, actions in runner.run():
             stamp = ts.strftime("%Y-%m-%d %H:%M:%S")
-            acct = broker.account()
-            print(f"[{stamp}] equity=${acct.equity:,.2f}")
+            # The status read is display-only; a transient broker error here must
+            # not kill the loop. Show '?' and carry on.
+            try:
+                equity = f"${broker.account().equity:,.2f}"
+            except Exception as exc:
+                equity = f"? ({type(exc).__name__})"
+            print(f"[{stamp}] equity={equity}")
             for a in actions:
                 print(f"    {a}")
     except KeyboardInterrupt:

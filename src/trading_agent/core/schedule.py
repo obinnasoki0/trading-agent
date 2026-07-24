@@ -108,7 +108,13 @@ class AutonomousRunner:
                 break
             now = self._clock()
             if is_market_open(self.session, now):
-                actions = self.engine.step(pending)
+                # A transient broker/data/network error must NOT kill an
+                # unattended loop meant to run for months -- log it and continue
+                # to the next cycle. Positions are untouched; it just skips a turn.
+                try:
+                    actions = self.engine.step(pending)
+                except Exception as exc:
+                    actions = [f"cycle error (skipping, will retry): {type(exc).__name__}: {exc}"]
                 if pending is not None:
                     actions = [f"(event) {a}" for a in actions] or [f"(event) {pending}: no action"]
                 yield now, actions
