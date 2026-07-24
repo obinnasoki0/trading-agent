@@ -210,6 +210,26 @@ def cmd_loop(args) -> int:
     return 0
 
 
+def cmd_flatten(args) -> int:
+    """Sell ALL positions to go flat -- useful to clean up a jammed test account."""
+    cfg = load(args.config)
+    broker = _build_broker(cfg, args.i_understand_the_risks)
+    from .core.models import Order, OrderType, Side
+
+    positions = broker.positions()
+    if not positions:
+        print("No positions to close.")
+        return 0
+    print(f"Closing {len(positions)} position(s)...")
+    for sym, pos in positions.items():
+        if pos.quantity <= 0:
+            continue
+        filled = broker.submit(Order(sym, Side.SELL, pos.quantity, OrderType.MARKET))
+        print(f"  sell {pos.quantity:.6f} {sym}: {filled.status.value} {filled.broker_id or ''}")
+    print("Done. Re-check balances in your broker dashboard.")
+    return 0
+
+
 def cmd_login(args) -> int:
     """One-time interactive Robinhood OAuth. Opens a browser, saves refreshable
     tokens to a portable file you can move to an always-on server."""
@@ -287,6 +307,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("strategies", help="List available strategies")
     s.set_defaults(func=cmd_strategies)
+
+    fl = sub.add_parser("flatten", help="Sell ALL positions (clean up a jammed account)")
+    fl.add_argument("--config")
+    fl.add_argument("--i-understand-the-risks", action="store_true",
+                    help="Required to sell on a live broker.")
+    fl.set_defaults(func=cmd_flatten)
 
     lg = sub.add_parser("login", help="One-time Robinhood OAuth (durable, refreshable tokens)")
     lg.add_argument("--token-path", dest="token_path",
