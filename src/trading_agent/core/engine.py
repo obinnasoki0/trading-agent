@@ -86,8 +86,17 @@ class TradingEngine:
     def _handle_exit(self, symbol: str, price: float, actions: list[str]) -> bool:
         """Stop-loss / take-profit for a held position. Returns True if it sold."""
         pos = self.broker.positions().get(symbol)
+        if not pos:
+            return False
         entry = self._entry_price.get(symbol)
-        if not (pos and entry):
+        if entry is None:
+            # Recover entry price across restarts from the broker's reported
+            # average, so stops/take-profits protect positions opened before this
+            # process started. Without this, a restart orphans them.
+            entry = getattr(pos, "avg_price", 0.0) or 0.0
+            if entry:
+                self._entry_price[symbol] = entry
+        if not entry:
             return False
         if price <= entry * (1 - self.risk.limits.stop_loss_pct):
             self._submit(symbol, Side.SELL, pos.quantity, actions, reason="stop-loss")
