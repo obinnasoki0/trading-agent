@@ -179,8 +179,10 @@ def cmd_loop(args) -> int:
         event_queue = _queue.Queue()
         news_source = _news_source(cfg, event_queue=event_queue)
 
+    max_positions = args.max_positions if args.max_positions is not None else cfg.max_positions
     strat = _build_strategy(cfg, news_source=news_source)
-    engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols, cfg.lookback_days, cfg.max_positions)
+    engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols,
+                           cfg.lookback_days, max_positions)
 
     interval = args.interval if args.interval is not None else cfg.interval_seconds
     session = Session(cfg.session)
@@ -273,6 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
     lp = sub.add_parser("loop", help="Run the autonomous, unattended trading loop")
     lp.add_argument("--config")
     lp.add_argument("--interval", type=int, help="Seconds between cycles (overrides config)")
+    lp.add_argument("--max-positions", type=int, dest="max_positions",
+                    help="Override how many names to hold (e.g. 10 for testing). Overrides config.")
     lp.add_argument("--max-iterations", type=int, dest="max_iterations",
                     help="Stop after N cycles (for testing).")
     lp.add_argument("--event-driven", action="store_true", dest="event_driven",
