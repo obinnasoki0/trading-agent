@@ -143,7 +143,11 @@ class RiskManager:
         if self.halted:
             return RiskDecision(False, None, "daily loss limit hit; new buys halted")
 
-        gross = sum(abs(p.quantity) * price for p in account.positions.values())
+        # Gross = market value of all current positions. Use equity - cash, which
+        # is correct for any mix of assets. (Summing quantity * the ORDER's price
+        # is wrong across symbols -- e.g. millions of SHIB * a stock price blows
+        # the cap and vetoes everything.)
+        gross = max(0.0, equity - account.cash)
         if gross + order.quantity * price > self.limits.max_gross_exposure_pct * equity:
             return RiskDecision(False, None, "gross exposure cap reached")
 
