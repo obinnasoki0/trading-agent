@@ -29,7 +29,7 @@ LARGECAP = [
 CRYPTO = [
     "BTC/USD", "ETH/USD", "SOL/USD", "LTC/USD", "BCH/USD", "LINK/USD",
     "UNI/USD", "AAVE/USD", "AVAX/USD", "DOT/USD", "DOGE/USD", "SHIB/USD",
-    "XRP/USD", "MATIC/USD", "ADA/USD",
+    "XRP/USD", "ADA/USD",
 ]
 
 UNIVERSES: dict[str, list[str]] = {
