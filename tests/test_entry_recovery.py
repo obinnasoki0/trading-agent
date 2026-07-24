@@ -41,15 +41,16 @@ def _engine(broker):
 def test_stop_fires_on_recovered_entry_after_restart():
     broker = _HoldingBroker()
     engine = _engine(broker)                 # fresh engine => empty _entry_price
-    # Price 94 is below the 5% stop off the broker's avg (100 * 0.95 = 95).
+    # Price 94 is below the 5% stop off the broker's avg (100 * 0.95 = 95). The
+    # stop can only fire if the entry was recovered from the broker.
     sold = engine._handle_exit("AAA", 94.0, actions=[])
     assert sold is True
     assert broker.sold == ["AAA"]
-    assert engine._entry_price.get("AAA") == 100.0   # recovered from the broker
 
 
-def test_no_exit_when_position_healthy():
+def test_healthy_position_recovers_entry_without_selling():
     broker = _HoldingBroker()
-    engine = _engine(broker)
+    engine = _engine(broker)                 # empty _entry_price, as after a restart
     assert engine._handle_exit("AAA", 99.0, actions=[]) is False   # only 1% down
     assert broker.sold == []
+    assert engine._entry_price.get("AAA") == 100.0   # recovered from the broker
