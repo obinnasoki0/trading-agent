@@ -107,15 +107,15 @@ class TradingEngine:
             return True
         return False
 
-    def _try_buy(self, symbol, price, signal, actions) -> bool:
+    def _try_buy(self, symbol, price, signal, actions) -> tuple[bool, str]:
         account = self.broker.account()
         qty = self.risk.size_for(symbol, price, account.equity) * getattr(signal, "size_mult", 1.0)
         order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=datetime.now())
         decision = self.risk.review(order, price, account)
         if decision.approved and decision.order:
             self._submit_order(decision.order, price, actions, signal.reason)
-            return True
-        return False
+            return True, "ok"
+        return False, f"{symbol}: {decision.reason}"
 
     def _evaluate(self, symbol: str, actions: list[str]) -> None:
         loaded = self._load(symbol, actions)
@@ -129,8 +129,9 @@ class TradingEngine:
             return
         signal = self.strategy.generate(symbol, history)
         if signal.strength > 0.05 and not pos:
-            if not self._try_buy(symbol, price, signal, actions):
-                actions.append(f"{symbol}: buy vetoed")
+            ok, reason = self._try_buy(symbol, price, signal, actions)
+            if not ok:
+                actions.append(f"buy vetoed: {reason}")
         elif signal.strength < -0.05 and pos:
             self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
 
@@ -157,12 +158,17 @@ class TradingEngine:
         slots = max(0, self.max_positions - len(self.broker.positions()))
         candidates.sort(key=lambda c: c[0], reverse=True)  # strongest conviction first
         opened = 0
+        last_veto = ""
         for _strength, symbol, price, signal in candidates[:slots]:
-            if self._try_buy(symbol, price, signal, actions):
+            ok, reason = self._try_buy(symbol, price, signal, actions)
+            if ok:
                 opened += 1
+            else:
+                last_veto = reason
         if opened == 0:
+            why = f" — {last_veto}" if last_veto else ""
             actions.append(f"scanned {len(universe)}: {len(candidates)} qualified, "
-                           f"{slots} slot(s) open, none filled")
+                           f"{slots} slot(s) open, none filled{why}")
 
     def _submit(self, symbol, side, qty, actions, reason):
         order = Order(symbol, side, qty, OrderType.MARKET, created_at=datetime.now())
