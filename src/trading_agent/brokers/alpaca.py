@@ -23,6 +23,22 @@ from datetime import datetime
 from ..core.models import AccountState, Order, OrderStatus, Position, Side
 from .base import Broker
 
+_CRYPTO_QUOTES = ("USDT", "USDC", "USD", "BTC")
+
+
+def _normalize_symbol(symbol: str, asset_class: str = "") -> str:
+    """Alpaca reports crypto positions as 'LTCUSD' but orders/config use
+    'LTC/USD'. Insert the slash so position lookups match the traded symbol --
+    without this the engine never sees the holding, re-buys every cycle, and
+    stops/take-profits never fire."""
+    s = str(symbol)
+    if "/" in s or "crypto" not in str(asset_class).lower():
+        return s
+    for quote in _CRYPTO_QUOTES:
+        if s.endswith(quote) and len(s) > len(quote):
+            return f"{s[:-len(quote)]}/{quote}"
+    return s
+
 
 class AlpacaBroker(Broker):
     name = "alpaca"
@@ -84,7 +100,8 @@ class AlpacaBroker(Broker):
     def positions(self) -> dict[str, Position]:
         out: dict[str, Position] = {}
         for p in self._client().get_all_positions():
-            out[p.symbol] = Position(p.symbol, float(p.qty), float(p.avg_entry_price))
+            sym = _normalize_symbol(p.symbol, getattr(p, "asset_class", ""))
+            out[sym] = Position(sym, float(p.qty), float(p.avg_entry_price))
         return out
 
     def account(self) -> AccountState:
