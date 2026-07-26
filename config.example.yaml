@@ -25,6 +25,16 @@ asset_class: equity            # equity | crypto  (crypto => genuine 24/7 on Alp
 # Must be true AND you must pass --i-understand-the-risks to place real orders.
 allow_live: false
 
+# --- Long/short -------------------------------------------------------------
+# false (default): long-only -- buy bullish setups, sit in cash otherwise.
+# true: also SHORT bearish setups. Only takes effect where the broker supports
+# it (Alpaca equities on margin, and paper). Crypto is spot-only and Robinhood
+# MCP is long-only, so this is ignored there. Shorts are sized smaller and
+# stopped out tightly (a rising price is the loss). Requires a margin-enabled
+# Alpaca account for live/paper equities.
+allow_short: false
+short_size_mult: 0.5           # shorts sized at this fraction of a long (0.5 = half)
+
 data_source: synthetic         # synthetic | yfinance | csv
 lookback_days: 400
 

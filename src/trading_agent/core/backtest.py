@@ -60,47 +60,93 @@ class BacktestResult:
 class _ExecMixin:
     """Shared order logic for the single-symbol and portfolio backtesters.
 
-    Expects ``self.broker`` (PaperBroker), ``self.risk`` (RiskManager), and
-    ``self._entry_price`` on the instance.
+    Expects ``self.broker`` (PaperBroker), ``self.risk`` (RiskManager),
+    ``self._entry_price``, and ``self.allow_short`` / ``self.short_size_mult``
+    on the instance.
     """
 
     def _act(self, symbol, strength, price, ts, account, trades, size_mult=1.0):
         pos = self.broker.positions().get(symbol)
-        if strength > 0.05 and not pos:
-            qty = self.risk.size_for(symbol, price, account.equity) * size_mult
-            if qty <= 0:
-                return
-            order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=ts)
-            decision = self.risk.review(order, price, account)
-            if decision.approved and decision.order:
-                filled = self.broker.submit(decision.order)
-                if filled.status.value == "filled":
-                    self._entry_price[symbol] = filled.filled_price
-                    trades.append({"ts": str(ts), "side": "buy", "qty": filled.filled_quantity,
-                                   "price": filled.filled_price, "reason": "signal"})
-        elif strength < -0.05 and pos:
-            self._exit(symbol, price, ts, trades, reason="signal")
+        is_long = bool(pos and pos.quantity > 0)
+        is_short = bool(pos and pos.quantity < 0)
+        if strength > 0.05:
+            if is_short:  # flipped bullish -> cover
+                self._close(symbol, price, ts, trades, reason="cover")
+            elif not pos:
+                self._open(symbol, Side.BUY, price, ts, account, trades, size_mult)
+        elif strength < -0.05:
+            if is_long:  # flipped bearish -> sell
+                self._close(symbol, price, ts, trades, reason="signal")
+            elif not pos and getattr(self, "allow_short", False):
+                self._open(symbol, Side.SELL, price, ts, account, trades,
+                           size_mult * getattr(self, "short_size_mult", 0.5))
 
-    def _exit(self, symbol, price, ts, trades, reason):
-        pos = self.broker.positions().get(symbol)
-        if not pos:
+    def _open(self, symbol, side, price, ts, account, trades, size_mult):
+        qty = self.risk.size_for(symbol, price, account.equity) * size_mult
+        if qty <= 0:
             return
-        order = Order(symbol, Side.SELL, pos.quantity, OrderType.MARKET, created_at=ts)
+        order = Order(symbol, side, qty, OrderType.MARKET, created_at=ts)
+        decision = self.risk.review(order, price, account)
+        if decision.approved and decision.order:
+            filled = self.broker.submit(decision.order)
+            if filled.status.value == "filled":
+                self._entry_price[symbol] = filled.filled_price
+                trades.append({"ts": str(ts), "side": side.value, "qty": filled.filled_quantity,
+                               "price": filled.filled_price, "reason": "signal"})
+
+    def _close(self, symbol, price, ts, trades, reason):
+        """Flatten a long (SELL) or a short (BUY-to-cover)."""
+        pos = self.broker.positions().get(symbol)
+        if not pos or abs(pos.quantity) < 1e-9:
+            return
+        side = Side.SELL if pos.quantity > 0 else Side.BUY
+        order = Order(symbol, side, abs(pos.quantity), OrderType.MARKET, created_at=ts)
         filled = self.broker.submit(order)
         if filled.status.value == "filled":
             self._entry_price.pop(symbol, None)
-            trades.append({"ts": str(ts), "side": "sell", "qty": filled.filled_quantity,
+            trades.append({"ts": str(ts), "side": side.value, "qty": filled.filled_quantity,
                            "price": filled.filled_price, "reason": reason})
+
+    # Back-compat alias: existing call sites use _exit for closing a position.
+    def _exit(self, symbol, price, ts, trades, reason):
+        self._close(symbol, price, ts, trades, reason)
+
+    def _check_stops(self, symbol, price, ts, trades) -> bool:
+        """Direction-aware stop-loss / take-profit. Returns True if it closed."""
+        pos = self.broker.positions().get(symbol)
+        entry = self._entry_price.get(symbol)
+        if not pos or not entry:
+            return False
+        stop = self.risk.limits.stop_loss_pct
+        tp = self.risk.limits.take_profit_pct
+        if pos.quantity < 0:  # short
+            if price >= entry * (1 + stop):
+                self._close(symbol, price, ts, trades, reason="stop-loss")
+                return True
+            if tp > 0 and price <= entry * (1 - tp):
+                self._close(symbol, price, ts, trades, reason="take-profit")
+                return True
+            return False
+        if price <= entry * (1 - stop):  # long
+            self._close(symbol, price, ts, trades, reason="stop-loss")
+            return True
+        if tp > 0 and price >= entry * (1 + tp):
+            self._close(symbol, price, ts, trades, reason="take-profit")
+            return True
+        return False
 
 
 class Backtester(_ExecMixin):
     def __init__(self, strategy: Strategy, risk: RiskManager,
                  starting_cash: float = 10_000.0, commission: float = 0.0,
-                 slippage_bps: float = 1.0):
+                 slippage_bps: float = 1.0, allow_short: bool = False,
+                 short_size_mult: float = 0.5):
         self.strategy = strategy
         self.risk = risk
         self.broker = PaperBroker(starting_cash, commission, slippage_bps)
         self._entry_price: dict[str, float] = {}
+        self.allow_short = allow_short
+        self.short_size_mult = short_size_mult
 
     def run(self, symbol: str, data: pd.DataFrame) -> BacktestResult:
         equity_points: list[tuple] = []
@@ -124,19 +170,10 @@ class Backtester(_ExecMixin):
                 equity_points.append((ts, self.broker.account().equity))
                 continue
 
-            # 2) Exits on the open position: stop-loss, then take-profit.
-            pos = self.broker.positions().get(symbol)
-            entry = self._entry_price.get(symbol)
-            if pos and entry:
-                tp = self.risk.limits.take_profit_pct
-                if price <= entry * (1 - self.risk.limits.stop_loss_pct):
-                    self._exit(symbol, price, ts, trades, reason="stop-loss")
-                    equity_points.append((ts, self.broker.account().equity))
-                    continue
-                if tp > 0 and price >= entry * (1 + tp):
-                    self._exit(symbol, price, ts, trades, reason="take-profit")
-                    equity_points.append((ts, self.broker.account().equity))
-                    continue
+            # 2) Exits on the open position: stop-loss / take-profit (both sides).
+            if self._check_stops(symbol, price, ts, trades):
+                equity_points.append((ts, self.broker.account().equity))
+                continue
 
             # 3) Strategy signal -> sized order -> risk gate -> fill.
             if len(window) >= self.strategy.warmup:
@@ -162,11 +199,14 @@ class PortfolioBacktester(_ExecMixin):
 
     def __init__(self, strategy: Strategy, risk: RiskManager,
                  starting_cash: float = 10_000.0, commission: float = 0.0,
-                 slippage_bps: float = 1.0):
+                 slippage_bps: float = 1.0, allow_short: bool = False,
+                 short_size_mult: float = 0.5):
         self.strategy = strategy
         self.risk = risk
         self.broker = PaperBroker(starting_cash, commission, slippage_bps)
         self._entry_price: dict[str, float] = {}
+        self.allow_short = allow_short
+        self.short_size_mult = short_size_mult
 
     def run(self, data: dict[str, pd.DataFrame]) -> BacktestResult:
         if not data:
@@ -200,17 +240,8 @@ class PortfolioBacktester(_ExecMixin):
 
             for sym, df in data.items():
                 price = float(df.loc[ts, "close"])
-                pos = self.broker.positions().get(sym)
-
-                entry = self._entry_price.get(sym)
-                if pos and entry:
-                    tp = self.risk.limits.take_profit_pct
-                    if price <= entry * (1 - self.risk.limits.stop_loss_pct):
-                        self._exit(sym, price, ts, trades, reason="stop-loss")
-                        continue
-                    if tp > 0 and price >= entry * (1 + tp):
-                        self._exit(sym, price, ts, trades, reason="take-profit")
-                        continue
+                if self._check_stops(sym, price, ts, trades):
+                    continue
 
                 window = df.loc[:ts]
                 if len(window) < self.strategy.warmup:

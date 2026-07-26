@@ -117,6 +117,25 @@ block to override. Both keep you in low-to-medium-risk territory; `low` uses
 smaller positions (5%), tighter stops, a 10% drawdown kill switch, and a 20%
 cash floor.
 
+## Long/short
+
+By default the agent is **long-only**: it buys bullish setups and holds cash
+otherwise. Set `allow_short: true` to also **short** bearish setups — the same
+signal, read the other way (strongly negative strength opens a short instead of
+staying flat). Shorts:
+
+- only open where the broker supports it — **Alpaca equities** (on a margin-
+  enabled account; paper included) and the paper broker. Crypto is spot-only and
+  Robinhood MCP is long-only, so the flag is ignored there.
+- are sized smaller than longs (`short_size_mult`, default 0.5) and stopped out
+  tightly — for a short, a *rising* price is the loss, so the stop triggers when
+  price climbs `stop_loss_pct` above entry (take-profit when it falls).
+- are covered automatically on a stop/take-profit, on the drawdown kill switch,
+  or when the signal flips bullish.
+
+Validate it offline first: `allow_short` also applies to `backtest`, so you can
+compare long-only vs. long/short on the same data before ever going live.
+
 ## Architecture
 
 ```

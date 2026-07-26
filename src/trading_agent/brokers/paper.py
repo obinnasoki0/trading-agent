@@ -21,6 +21,9 @@ from .base import Broker
 class PaperBroker(Broker):
     name = "paper"
     is_live = False
+    # The paper broker fully models signed (long/short) positions, so dry-run
+    # of a long/short equity strategy behaves like the real Alpaca margin path.
+    supports_short = True
 
     def __init__(self, starting_cash: float = 10_000.0,
                  commission: float = 0.0, slippage_bps: float = 1.0):
@@ -45,7 +48,9 @@ class PaperBroker(Broker):
         equity = self.cash + sum(
             p.quantity * self._prices.get(s, p.avg_price) for s, p in self._positions.items()
         )
-        return AccountState(cash=self.cash, equity=equity,
+        gross = sum(abs(p.quantity) * self._prices.get(s, p.avg_price)
+                    for s, p in self._positions.items())
+        return AccountState(cash=self.cash, equity=equity, gross_value=gross,
                             positions=dict(self._positions), timestamp=datetime.now())
 
     def _fill_price(self, side: Side, ref: float) -> float:
@@ -53,6 +58,9 @@ class PaperBroker(Broker):
         return ref + adj if side is Side.BUY else ref - adj
 
     def submit(self, order: Order) -> Order:
+        """Signed-position accounting: BUY adds +qty, SELL adds -qty. A SELL from
+        flat (or covering past zero) opens a SHORT; a BUY covers a short. Cash
+        moves by -delta*price, so shorting adds cash and covering spends it."""
         ref = self._prices.get(order.symbol)
         if not ref or ref <= 0:
             order.status = OrderStatus.REJECTED
@@ -60,26 +68,28 @@ class PaperBroker(Broker):
 
         price = self._fill_price(order.side, ref)
         pos = self._positions.get(order.symbol, Position(order.symbol))
+        old_qty = pos.quantity
+        delta = order.quantity if order.side is Side.BUY else -order.quantity
 
-        if order.side is Side.BUY:
-            cost = price * order.quantity + self.commission
-            if cost > self.cash:
-                order.status = OrderStatus.REJECTED
-                return order
-            self.cash -= cost
-            new_qty = pos.quantity + order.quantity
-            pos.avg_price = ((pos.avg_price * pos.quantity) + price * order.quantity) / new_qty if new_qty else 0.0
-            pos.quantity = new_qty
-        else:  # SELL
-            qty = min(order.quantity, pos.quantity)
-            if qty <= 0:
-                order.status = OrderStatus.REJECTED
-                return order
-            self.cash += price * qty - self.commission
-            pos.quantity -= qty
-            order.quantity = qty
+        # Only a cash-spending BUY can be rejected for insufficient cash.
+        if order.side is Side.BUY and delta * price + self.commission > self.cash:
+            order.status = OrderStatus.REJECTED
+            return order
 
-        if pos.quantity <= 1e-9:
+        self.cash -= delta * price + self.commission
+        new_qty = old_qty + delta
+
+        if old_qty == 0 or (old_qty > 0) == (delta > 0):
+            # Opening or adding in the same direction -> weighted-average entry.
+            denom = abs(old_qty) + abs(delta)
+            pos.avg_price = ((pos.avg_price * abs(old_qty) + price * abs(delta)) / denom
+                             if denom else 0.0)
+        elif abs(delta) > abs(old_qty):
+            pos.avg_price = price  # reversed through zero -> new entry is the fill
+        # else: partial reduce -> keep the existing average
+
+        pos.quantity = new_qty
+        if abs(pos.quantity) < 1e-9:
             self._positions.pop(order.symbol, None)
         else:
             self._positions[order.symbol] = pos

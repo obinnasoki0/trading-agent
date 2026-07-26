@@ -133,27 +133,31 @@ class RiskManager:
         return float(max(0.0, min(cap_shares, risk_shares)))
 
     # -- the gate ---------------------------------------------------------
-    def review(self, order: Order, price: float, account: AccountState) -> RiskDecision:
+    def review(self, order: Order, price: float, account: AccountState,
+               closing: bool = False) -> RiskDecision:
+        """Gate an OPENING order (a long buy or a short sell). Closing orders
+        reduce exposure and are always allowed -- pass closing=True (the engine
+        routes closes straight to the broker, so it rarely needs to)."""
         equity = account.equity
         self.observe_equity(equity)
 
-        if order.side is Side.SELL:
-            return RiskDecision(True, order, "sell/exit always allowed")
+        if closing:
+            return RiskDecision(True, order, "closing/exit always allowed")
 
         if self.halted:
-            return RiskDecision(False, None, "daily loss limit hit; new buys halted")
+            return RiskDecision(False, None, "daily loss limit hit; new opens halted")
 
-        # Gross = market value of all current positions. Use equity - cash, which
-        # is correct for any mix of assets. (Summing quantity * the ORDER's price
-        # is wrong across symbols -- e.g. millions of SHIB * a stock price blows
-        # the cap and vetoes everything.)
-        gross = max(0.0, equity - account.cash)
-        if gross + order.quantity * price > self.limits.max_gross_exposure_pct * equity:
+        # Gross = |market value| of all positions (longs + shorts). Prefer the
+        # broker-computed value; fall back to (equity - cash) for long-only.
+        gross = account.gross_value if account.gross_value else max(0.0, equity - account.cash)
+        notional = order.quantity * price
+        if gross + notional > self.limits.max_gross_exposure_pct * equity:
             return RiskDecision(False, None, "gross exposure cap reached")
 
+        # Per-symbol cap uses absolute exposure so it works for shorts too.
         existing = account.positions.get(order.symbol)
-        existing_val = (existing.quantity * price) if existing else 0.0
-        new_val = existing_val + order.quantity * price
+        existing_val = abs(existing.quantity) * price if existing else 0.0
+        new_val = existing_val + notional
         if new_val > self.limits.max_position_pct * equity:
             allowed_val = self.limits.max_position_pct * equity - existing_val
             allowed_qty = max(0.0, allowed_val / price)
@@ -161,9 +165,11 @@ class RiskManager:
                 return RiskDecision(False, None, "position size cap reached for symbol")
             order.quantity = allowed_qty
 
-        cost = order.quantity * price
-        if account.cash - cost < self.limits.min_cash_pct * equity:
-            return RiskDecision(False, None, "insufficient cash under min-cash buffer")
+        # Cash floor applies only to cash-spending long buys; shorting adds cash.
+        if order.side is Side.BUY:
+            cost = order.quantity * price
+            if account.cash - cost < self.limits.min_cash_pct * equity:
+                return RiskDecision(False, None, "insufficient cash under min-cash buffer")
 
         if order.quantity <= 0:
             return RiskDecision(False, None, "sized to zero shares")

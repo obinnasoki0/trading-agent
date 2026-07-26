@@ -44,6 +44,12 @@ class AgentConfig:
     broker: str = "paper"          # paper | alpaca | robinhood_mcp | robinhood
     asset_class: str = "equity"    # equity | crypto (crypto => 24/7 on Alpaca)
     allow_live: bool = False       # must be True to place real orders
+    # Go short on bearish setups (not just flat). Only takes effect when the
+    # broker actually supports shorting (Alpaca equities / paper). Crypto is
+    # spot-only and Robinhood MCP is long-only, so this is ignored there.
+    allow_short: bool = False
+    # Shorts are sized smaller than longs (tighter risk per the framework).
+    short_size_mult: float = 0.5
     data_source: str = "synthetic"  # synthetic | yfinance | csv
     lookback_days: int = 400
     # Autonomy: how the unattended loop behaves.

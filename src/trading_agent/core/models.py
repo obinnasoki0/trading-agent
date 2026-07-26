@@ -102,3 +102,15 @@ class AccountState:
     equity: float
     positions: dict[str, Position] = field(default_factory=dict)
     timestamp: datetime | None = None
+    # Sum of |market value| across positions (longs + shorts). Set by the broker,
+    # which knows current prices; the risk manager uses it for the gross cap.
+    # 0.0 means "not provided" -> risk falls back to (equity - cash).
+    gross_value: float = 0.0
+
+    def is_long(self, symbol: str) -> bool:
+        p = self.positions.get(symbol)
+        return bool(p and p.quantity > 0)
+
+    def is_short(self, symbol: str) -> bool:
+        p = self.positions.get(symbol)
+        return bool(p and p.quantity < 0)

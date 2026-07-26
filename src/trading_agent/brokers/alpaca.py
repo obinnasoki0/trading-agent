@@ -47,6 +47,9 @@ class AlpacaBroker(Broker):
         self.paper = paper
         self.is_live = not paper
         self.asset_class = asset_class  # "equity" | "crypto"
+        # Alpaca supports shorting equities on margin (paper included), but crypto
+        # is spot-only -- no shorts. Gate the engine accordingly.
+        self.supports_short = asset_class != "crypto"
         self._trading = None
         self._stock_data = None
         self._crypto_data = None
@@ -108,12 +111,27 @@ class AlpacaBroker(Broker):
         acct = self._client().get_account()
         cash = float(acct.cash)
         equity = float(getattr(acct, "equity", cash) or cash)
-        return AccountState(cash=cash, equity=equity, positions=self.positions(),
-                            timestamp=datetime.now())
+        # Gross = |market value| of longs + shorts, so the risk manager's gross
+        # cap counts short exposure too. Alpaca reports these directly.
+        longs = float(getattr(acct, "long_market_value", 0) or 0)
+        shorts = float(getattr(acct, "short_market_value", 0) or 0)
+        gross = abs(longs) + abs(shorts)
+        return AccountState(cash=cash, equity=equity, gross_value=gross,
+                            positions=self.positions(), timestamp=datetime.now())
 
     def submit(self, order: Order) -> Order:
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
+
+        # Crypto is spot-only on Alpaca: a SELL that would open/extend a short is
+        # invalid. The engine shouldn't route one here, but guard anyway.
+        if self.asset_class == "crypto" and order.side is Side.SELL:
+            held = self.positions().get(_normalize_symbol(order.symbol, self.asset_class))
+            held_qty = held.quantity if held else 0.0
+            if order.quantity - held_qty > 1e-9:
+                order.status = OrderStatus.REJECTED
+                order.broker_id = "error: crypto is spot-only (cannot short)"
+                return order
 
         side = OrderSide.BUY if order.side is Side.BUY else OrderSide.SELL
         # Crypto supports GTC and trades 24/7; equities use DAY.

@@ -23,7 +23,8 @@ from .risk import RiskManager
 class TradingEngine:
     def __init__(self, broker: Broker, strategy: Strategy, risk: RiskManager,
                  data: DataProvider, symbols: list[str], lookback_days: int = 400,
-                 max_positions: int = 0):
+                 max_positions: int = 0, allow_short: bool = False,
+                 short_size_mult: float = 0.5):
         self.broker = broker
         self.strategy = strategy
         self.risk = risk
@@ -33,8 +34,14 @@ class TradingEngine:
         # 0 = evaluate/buy every symbol independently; >0 = rank the universe and
         # hold at most this many names (cross-sectional selection).
         self.max_positions = max_positions
+        # Open shorts on bearish setups (only if the broker supports it).
+        self.allow_short = allow_short
+        self.short_size_mult = short_size_mult
         self._entry_price: dict[str, float] = {}
         self._day: str | None = None
+
+    def _can_short(self) -> bool:
+        return self.allow_short and getattr(self.broker, "supports_short", False)
 
     def _roll_day(self, equity: float) -> None:
         today = datetime.now().date().isoformat()
@@ -56,8 +63,12 @@ class TradingEngine:
 
         kill = self.risk.kill_switch_triggered(account.equity)
         if kill:
-            for symbol in list(self.broker.positions()):
-                self._submit(symbol, Side.SELL, self.broker.positions()[symbol].quantity, actions,
+            for symbol, pos in list(self.broker.positions().items()):
+                if abs(pos.quantity) < 1e-9:
+                    continue
+                # Longs are sold, shorts are bought back (covered).
+                side = Side.SELL if pos.quantity > 0 else Side.BUY
+                self._submit(symbol, side, abs(pos.quantity), actions,
                              reason=f"KILL SWITCH: {kill}")
             return actions
 
@@ -84,9 +95,10 @@ class TradingEngine:
         return history, price
 
     def _handle_exit(self, symbol: str, price: float, actions: list[str]) -> bool:
-        """Stop-loss / take-profit for a held position. Returns True if it sold."""
+        """Stop-loss / take-profit for a held position (long OR short). Returns
+        True if it closed the position."""
         pos = self.broker.positions().get(symbol)
-        if not pos:
+        if not pos or abs(pos.quantity) < 1e-9:
             return False
         entry = self._entry_price.get(symbol)
         if entry is None:
@@ -98,24 +110,69 @@ class TradingEngine:
                 self._entry_price[symbol] = entry
         if not entry:
             return False
-        if price <= entry * (1 - self.risk.limits.stop_loss_pct):
+
+        stop = self.risk.limits.stop_loss_pct
+        tp = self.risk.limits.take_profit_pct
+        if pos.quantity < 0:  # SHORT: profits when price falls, loses when it rises
+            if price >= entry * (1 + stop):
+                self._submit(symbol, Side.BUY, abs(pos.quantity), actions, reason="stop-loss (short)")
+                return True
+            if tp > 0 and price <= entry * (1 - tp):
+                self._submit(symbol, Side.BUY, abs(pos.quantity), actions, reason="take-profit (short)")
+                return True
+            return False
+        # LONG
+        if price <= entry * (1 - stop):
             self._submit(symbol, Side.SELL, pos.quantity, actions, reason="stop-loss")
             return True
-        tp = self.risk.limits.take_profit_pct
         if tp > 0 and price >= entry * (1 + tp):
             self._submit(symbol, Side.SELL, pos.quantity, actions, reason="take-profit")
             return True
         return False
 
-    def _try_buy(self, symbol, price, signal, actions) -> tuple[bool, str]:
+    def _try_open(self, symbol, price, signal, side, actions) -> tuple[bool, str]:
+        """Size and open a new position -- a long (BUY) or a short (SELL). Shorts
+        are sized smaller via short_size_mult. Returns (opened?, reason)."""
         account = self.broker.account()
-        qty = self.risk.size_for(symbol, price, account.equity) * getattr(signal, "size_mult", 1.0)
-        order = Order(symbol, Side.BUY, qty, OrderType.MARKET, created_at=datetime.now())
+        mult = getattr(signal, "size_mult", 1.0)
+        if side is Side.SELL:
+            mult *= self.short_size_mult
+        qty = self.risk.size_for(symbol, price, account.equity) * mult
+        order = Order(symbol, side, qty, OrderType.MARKET, created_at=datetime.now())
         decision = self.risk.review(order, price, account)
         if decision.approved and decision.order:
-            self._submit_order(decision.order, price, actions, signal.reason)
+            self._submit_order(decision.order, price, actions, signal.reason, opening=True)
             return True, "ok"
         return False, f"{symbol}: {decision.reason}"
+
+    def _act_on_signal(self, symbol, price, pos, signal, actions,
+                       collect: list | None = None) -> None:
+        """Turn a signal into an open/close given the current position. When
+        ``collect`` is provided (ranked mode), new opens are appended there as
+        (score, symbol, price, signal, side) instead of executed immediately."""
+        is_long = bool(pos and pos.quantity > 0)
+        is_short = bool(pos and pos.quantity < 0)
+        if signal.strength > 0.05:
+            if is_short:  # signal flipped bullish -> cover the short
+                self._submit(symbol, Side.BUY, abs(pos.quantity), actions,
+                             reason=f"cover: {signal.reason}")
+            elif not pos:
+                if collect is not None:
+                    collect.append((signal.strength, symbol, price, signal, Side.BUY))
+                else:
+                    ok, reason = self._try_open(symbol, price, signal, Side.BUY, actions)
+                    if not ok:
+                        actions.append(f"buy vetoed: {reason}")
+        elif signal.strength < -0.05:
+            if is_long:  # signal flipped bearish -> sell the long
+                self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
+            elif not pos and self._can_short():
+                if collect is not None:
+                    collect.append((-signal.strength, symbol, price, signal, Side.SELL))
+                else:
+                    ok, reason = self._try_open(symbol, price, signal, Side.SELL, actions)
+                    if not ok:
+                        actions.append(f"short vetoed: {reason}")
 
     def _evaluate(self, symbol: str, actions: list[str]) -> None:
         loaded = self._load(symbol, actions)
@@ -128,17 +185,12 @@ class TradingEngine:
         if len(history) < self.strategy.warmup:
             return
         signal = self.strategy.generate(symbol, history)
-        if signal.strength > 0.05 and not pos:
-            ok, reason = self._try_buy(symbol, price, signal, actions)
-            if not ok:
-                actions.append(f"buy vetoed: {reason}")
-        elif signal.strength < -0.05 and pos:
-            self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
+        self._act_on_signal(symbol, price, pos, signal, actions)
 
     def _ranked_step(self, universe: list[str], actions: list[str]) -> None:
-        """Scan the universe, handle exits, then open the top-ranked buys up to
-        the open-slot budget (max_positions minus current holdings)."""
-        candidates = []  # (strength, symbol, price, signal)
+        """Scan the universe, handle exits, then open the top-ranked setups (longs
+        and, if enabled, shorts) up to the open-slot budget."""
+        candidates: list = []  # (score, symbol, price, signal, side)
         for symbol in universe:
             loaded = self._load(symbol, actions)
             if loaded is None:
@@ -150,17 +202,14 @@ class TradingEngine:
             if len(history) < self.strategy.warmup:
                 continue
             signal = self.strategy.generate(symbol, history)
-            if signal.strength < -0.05 and pos:
-                self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
-            elif signal.strength > 0.05 and not pos:
-                candidates.append((signal.strength, symbol, price, signal))
+            self._act_on_signal(symbol, price, pos, signal, actions, collect=candidates)
 
         slots = max(0, self.max_positions - len(self.broker.positions()))
         candidates.sort(key=lambda c: c[0], reverse=True)  # strongest conviction first
         opened = 0
         last_veto = ""
-        for _strength, symbol, price, signal in candidates[:slots]:
-            ok, reason = self._try_buy(symbol, price, signal, actions)
+        for _score, symbol, price, signal, side in candidates[:slots]:
+            ok, reason = self._try_open(symbol, price, signal, side, actions)
             if ok:
                 opened += 1
             else:
@@ -174,7 +223,8 @@ class TradingEngine:
         order = Order(symbol, side, qty, OrderType.MARKET, created_at=datetime.now())
         self._submit_order(order, self.broker.last_price(symbol), actions, reason)
 
-    def _submit_order(self, order: Order, price: float, actions: list[str], reason: str):
+    def _submit_order(self, order: Order, price: float, actions: list[str], reason: str,
+                      opening: bool = False):
         filled = self.broker.submit(order)
         # A live broker held in dry-run marks orders with broker_id "dry-run".
         # Tag honestly so a dry-run never prints "[LIVE]".
@@ -187,8 +237,11 @@ class TradingEngine:
             tag = "LIVE"
 
         if filled.status.value == "filled":
-            if order.side is Side.BUY and filled.filled_price:
-                self._entry_price[order.symbol] = filled.filled_price
+            # Record entry on an opening order (long BUY or short SELL); clear it
+            # on any close/cover. Keying on `opening` -- not side -- is what makes
+            # short entries (a SELL) track their entry price correctly.
+            if opening:
+                self._entry_price[order.symbol] = filled.filled_price or price
             else:
                 self._entry_price.pop(order.symbol, None)
             actions.append(f"[{tag}] {order.side.value} {filled.filled_quantity:.4f} "

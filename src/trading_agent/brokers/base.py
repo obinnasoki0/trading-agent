@@ -14,6 +14,9 @@ class Broker:
     name: str = "base"
     #: True if orders hit a real market with real money.
     is_live: bool = False
+    #: True if this broker can hold short (negative) positions. Most can't
+    #: (crypto spot, Robinhood MCP); the engine only opens shorts when this is set.
+    supports_short: bool = False
 
     def account(self) -> AccountState:
         raise NotImplementedError

@@ -16,12 +16,24 @@ def test_position_cap_shrinks_order():
     assert abs(decision.order.quantity - 10) < 1e-6
 
 
-def test_sell_always_allowed_even_when_halted():
+def test_closing_order_always_allowed_even_when_halted():
+    # A close (closing=True) reduces exposure and must never be blocked, even
+    # when the daily-loss halt is on -- the agent must always be able to exit.
     rm = RiskManager()
     rm.halted = True
     acct = _account(cash=0, equity=5_000, positions={"AAPL": Position("AAPL", 10, 100)})
-    decision = rm.review(Order("AAPL", Side.SELL, 10), price=90.0, account=acct)
+    decision = rm.review(Order("AAPL", Side.SELL, 10), price=90.0, account=acct, closing=True)
     assert decision.approved
+
+
+def test_short_open_is_gated_when_halted():
+    # A bare SELL is now an OPENING short and must be gated like any new open,
+    # so the daily-loss halt blocks it.
+    rm = RiskManager()
+    rm.halted = True
+    acct = _account(cash=5_000, equity=5_000)
+    decision = rm.review(Order("AAPL", Side.SELL, 10), price=90.0, account=acct)
+    assert not decision.approved
 
 
 def test_daily_loss_halts_new_buys():

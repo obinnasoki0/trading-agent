@@ -132,13 +132,17 @@ def cmd_backtest(args) -> int:
 
     if args.portfolio:
         data = {s: provider.history(s, start, end) for s in cfg.symbols}
-        bt = PortfolioBacktester(strat, risk, cfg.starting_cash, cfg.commission, cfg.slippage_bps)
+        bt = PortfolioBacktester(strat, risk, cfg.starting_cash, cfg.commission,
+                                 cfg.slippage_bps, allow_short=cfg.allow_short,
+                                 short_size_mult=cfg.short_size_mult)
         result = bt.run(data)
         label = f"portfolio {cfg.symbols}"
     else:
         symbol = args.symbol or cfg.symbols[0]
         data = provider.history(symbol, start, end)
-        bt = Backtester(strat, risk, cfg.starting_cash, cfg.commission, cfg.slippage_bps)
+        bt = Backtester(strat, risk, cfg.starting_cash, cfg.commission,
+                        cfg.slippage_bps, allow_short=cfg.allow_short,
+                        short_size_mult=cfg.short_size_mult)
         result = bt.run(symbol, data)
         label = f"{symbol} ({len(data)} bars)"
 
@@ -155,7 +159,9 @@ def cmd_run(args) -> int:
     strat = _build_strategy(cfg)
     risk = RiskManager(cfg.risk, tiers=cfg.risk_tiers)
     broker = _build_broker(cfg, args.i_understand_the_risks)
-    engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols, cfg.lookback_days, cfg.max_positions)
+    engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols,
+                           cfg.lookback_days, cfg.max_positions,
+                           allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult)
 
     actions = engine.step()
     acct = broker.account()
@@ -182,7 +188,8 @@ def cmd_loop(args) -> int:
     max_positions = args.max_positions if args.max_positions is not None else cfg.max_positions
     strat = _build_strategy(cfg, news_source=news_source)
     engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols,
-                           cfg.lookback_days, max_positions)
+                           cfg.lookback_days, max_positions,
+                           allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult)
 
     interval = args.interval if args.interval is not None else cfg.interval_seconds
     session = Session(cfg.session)
@@ -222,10 +229,13 @@ def cmd_flatten(args) -> int:
         return 0
     print(f"Closing {len(positions)} position(s)...")
     for sym, pos in positions.items():
-        if pos.quantity <= 0:
+        if abs(pos.quantity) < 1e-9:
             continue
-        filled = broker.submit(Order(sym, Side.SELL, pos.quantity, OrderType.MARKET))
-        print(f"  sell {pos.quantity:.6f} {sym}: {filled.status.value} {filled.broker_id or ''}")
+        # Longs are sold, shorts are bought back (covered).
+        side = Side.SELL if pos.quantity > 0 else Side.BUY
+        filled = broker.submit(Order(sym, side, abs(pos.quantity), OrderType.MARKET))
+        print(f"  {side.value} {abs(pos.quantity):.6f} {sym}: "
+              f"{filled.status.value} {filled.broker_id or ''}")
     print("Done. Re-check balances in your broker dashboard.")
     return 0
 
