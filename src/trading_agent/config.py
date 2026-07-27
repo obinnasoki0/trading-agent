@@ -50,6 +50,12 @@ class AgentConfig:
     allow_short: bool = False
     # Shorts are sized smaller than longs (tighter risk per the framework).
     short_size_mult: float = 0.5
+    # Daily profit target (0 = off). Each time equity ratchets up this fraction,
+    # the agent banks its winners and keeps hunting. Convenience mirror of
+    # risk.daily_profit_target_pct so it can be set without an explicit risk block.
+    daily_profit_target_pct: float = 0.0
+    # After banking a name, sit it out this many cycles before reopening it.
+    profit_bank_cooldown_cycles: int = 3
     data_source: str = "synthetic"  # synthetic | yfinance | csv
     lookback_days: int = 400
     # Autonomy: how the unattended loop behaves.
@@ -94,6 +100,16 @@ def load(path: str | None = None) -> AgentConfig:
         tiers = [RiskTier(min_equity=float(spec.get("min_equity", 0)),
                           limits=_limits_from_spec(spec))
                  for spec in raw.pop("risk_tiers", [])]
+        # Top-level daily_profit_target_pct is a convenience: apply it to the base
+        # limits AND every tier so the ratchet survives a tier switch. An explicit
+        # per-tier/per-risk value still wins where set.
+        if raw.get("daily_profit_target_pct") is not None:
+            tgt = float(raw["daily_profit_target_pct"])
+            if not risk.daily_profit_target_pct:
+                risk.daily_profit_target_pct = tgt
+            for tier in tiers:
+                if not tier.limits.daily_profit_target_pct:
+                    tier.limits.daily_profit_target_pct = tgt
         # A universe becomes the candidate pool; default to holding 5 names if a
         # position cap wasn't set, so it doesn't try to buy the whole list.
         if raw.get("universe"):

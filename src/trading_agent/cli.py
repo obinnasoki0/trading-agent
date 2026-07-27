@@ -161,7 +161,8 @@ def cmd_run(args) -> int:
     broker = _build_broker(cfg, args.i_understand_the_risks)
     engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols,
                            cfg.lookback_days, cfg.max_positions,
-                           allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult)
+                           allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult,
+                           profit_bank_cooldown_cycles=cfg.profit_bank_cooldown_cycles)
 
     actions = engine.step()
     acct = broker.account()
@@ -189,7 +190,8 @@ def cmd_loop(args) -> int:
     strat = _build_strategy(cfg, news_source=news_source)
     engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols,
                            cfg.lookback_days, max_positions,
-                           allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult)
+                           allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult,
+                           profit_bank_cooldown_cycles=cfg.profit_bank_cooldown_cycles)
 
     interval = args.interval if args.interval is not None else cfg.interval_seconds
     session = Session(cfg.session)

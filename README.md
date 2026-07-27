@@ -136,6 +136,22 @@ staying flat). Shorts:
 Validate it offline first: `allow_short` also applies to `backtest`, so you can
 compare long-only vs. long/short on the same data before ever going live.
 
+## Daily profit target ("bank and keep hunting")
+
+Off by default. Set `daily_profit_target_pct` (e.g. `0.02`) and the agent turns
+each up-move into realized gains: every time equity ratchets another +2% above
+its last checkpoint, it **banks the winners** (sells whatever's in profit) and
+keeps scanning — the freed cash and slots rotate into the next strong signals.
+
+- It's a **ratchet**, not a one-shot: it harvests again after every further +2%
+  on the day, and the checkpoint resets at the next session.
+- A just-banked name sits out `profit_bank_cooldown_cycles` (default 3) before it
+  can be reopened, so the agent rotates into *fresh* names instead of churning
+  the one it just sold.
+- This is separate from per-position `take_profit_pct` (which exits one name at a
+  fixed gain) and from the daily-loss halt (the downside brake). Together they
+  give you a hunt-all-day loop that locks in gains as it goes.
+
 ## Architecture
 
 ```

@@ -24,7 +24,7 @@ class TradingEngine:
     def __init__(self, broker: Broker, strategy: Strategy, risk: RiskManager,
                  data: DataProvider, symbols: list[str], lookback_days: int = 400,
                  max_positions: int = 0, allow_short: bool = False,
-                 short_size_mult: float = 0.5):
+                 short_size_mult: float = 0.5, profit_bank_cooldown_cycles: int = 3):
         self.broker = broker
         self.strategy = strategy
         self.risk = risk
@@ -37,8 +37,16 @@ class TradingEngine:
         # Open shorts on bearish setups (only if the broker supports it).
         self.allow_short = allow_short
         self.short_size_mult = short_size_mult
+        # After the daily profit ratchet banks a name, don't reopen it for this
+        # many cycles -- forces rotation into fresh signals instead of rebuying.
+        self.profit_bank_cooldown_cycles = profit_bank_cooldown_cycles
         self._entry_price: dict[str, float] = {}
+        self._cooldown: dict[str, int] = {}  # symbol -> cycle it's tradable again
+        self._cycle = 0
         self._day: str | None = None
+
+    def _on_cooldown(self, symbol: str) -> bool:
+        return self._cooldown.get(symbol, 0) > self._cycle
 
     def _can_short(self) -> bool:
         return self.allow_short and getattr(self.broker, "supports_short", False)
@@ -60,6 +68,7 @@ class TradingEngine:
         actions: list[str] = []
         account = self.broker.account()
         self._roll_day(account.equity)
+        self._cycle += 1
 
         kill = self.risk.kill_switch_triggered(account.equity)
         if kill:
@@ -78,7 +87,38 @@ class TradingEngine:
         else:
             for symbol in universe:
                 self._evaluate(symbol, actions)
+
+        # Daily profit ratchet runs AFTER the scan, so held positions are priced
+        # at this cycle's fresh marks. On a trigger, bank the winners; the freed
+        # cash and slots redeploy into fresh signals next cycle (banked names sit
+        # out a short cooldown so it rotates instead of rebuying them).
+        if self.risk.harvest_due(self.broker.account().equity):
+            self._bank_profits(actions)
         return actions
+
+    def _bank_profits(self, actions: list[str]) -> None:
+        """Close every position currently in profit to realize the day's gains."""
+        banked = 0
+        target = self.risk.limits.daily_profit_target_pct
+        for symbol, pos in list(self.broker.positions().items()):
+            if abs(pos.quantity) < 1e-9:
+                continue
+            price = self.broker.last_price(symbol)
+            if not price or price <= 0:
+                continue
+            entry = self._entry_price.get(symbol) or getattr(pos, "avg_price", 0.0) or 0.0
+            if not entry:
+                continue
+            in_profit = price > entry if pos.quantity > 0 else price < entry
+            if not in_profit:
+                continue
+            side = Side.SELL if pos.quantity > 0 else Side.BUY
+            self._submit(symbol, side, abs(pos.quantity), actions,
+                         reason=f"bank profit (daily +{target:.1%} ratchet)")
+            self._cooldown[symbol] = self._cycle + self.profit_bank_cooldown_cycles
+            banked += 1
+        if banked == 0:
+            actions.append(f"daily +{target:.1%} target hit: no positions in profit to bank")
 
     def _load(self, symbol: str, actions: list[str]):
         start, end = make_window(self.lookback_days)
@@ -156,7 +196,7 @@ class TradingEngine:
             if is_short:  # signal flipped bullish -> cover the short
                 self._submit(symbol, Side.BUY, abs(pos.quantity), actions,
                              reason=f"cover: {signal.reason}")
-            elif not pos:
+            elif not pos and not self._on_cooldown(symbol):
                 if collect is not None:
                     collect.append((signal.strength, symbol, price, signal, Side.BUY))
                 else:
@@ -166,7 +206,7 @@ class TradingEngine:
         elif signal.strength < -0.05:
             if is_long:  # signal flipped bearish -> sell the long
                 self._submit(symbol, Side.SELL, pos.quantity, actions, reason=signal.reason)
-            elif not pos and self._can_short():
+            elif not pos and self._can_short() and not self._on_cooldown(symbol):
                 if collect is not None:
                     collect.append((-signal.strength, symbol, price, signal, Side.SELL))
                 else:

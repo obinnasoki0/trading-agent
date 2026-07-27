@@ -44,6 +44,16 @@ lookback_days: 400
 session: equity                # equity (9:30-16:00 ET) | extended (4-20 ET) | always (crypto/24-7)
 interval_seconds: 900          # seconds between decision cycles
 
+# --- Daily profit target ("bank and keep hunting") -------------------------
+# 0 = off. When set, each time the account climbs this fraction above its last
+# checkpoint the agent BANKS its winners (sells whatever's in profit to realize
+# the gains) and keeps trading -- the freed cash rotates into fresh strong
+# signals. It's a ratchet: +2% here means it harvests again after every further
+# +2% on the day, and resets at the next session. Just-banked names sit out a
+# short cooldown so it rotates instead of instantly rebuying them.
+daily_profit_target_pct: 0.0   # e.g. 0.02 = bank winners on every +2% day-move
+profit_bank_cooldown_cycles: 3 # cycles a banked name waits before it can reopen
+
 # --- News / sentiment tilt (current events, geopolitics, tech, banking) ----
 news:
   enabled: false               # true => blend headline sentiment with the technical signal

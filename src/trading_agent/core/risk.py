@@ -32,6 +32,9 @@ class RiskLimits:
     min_cash_pct: float = 0.0
     # Take profit: exit a position once it's up this much from entry (0 = off).
     take_profit_pct: float = 0.0
+    # Daily profit ratchet: each time equity climbs this much above the last
+    # checkpoint, bank the winners and keep hunting (0 = off). e.g. 0.02 = +2%.
+    daily_profit_target_pct: float = 0.0
 
     @classmethod
     def low(cls) -> "RiskLimits":
@@ -89,6 +92,8 @@ class RiskManager:
         self.limits = self.base_limits
         self._peak_equity: float | None = None
         self._day_open_equity: float | None = None
+        # High-water mark for the daily profit ratchet; advances each time we bank.
+        self._profit_checkpoint: float | None = None
         self.halted = False
 
     def _select_tier(self, equity: float) -> None:
@@ -101,7 +106,24 @@ class RiskManager:
     # -- daily / drawdown bookkeeping ------------------------------------
     def start_day(self, equity: float) -> None:
         self._day_open_equity = equity
+        self._profit_checkpoint = equity  # reset the profit ratchet each new day
         self.halted = False
+
+    def harvest_due(self, equity: float) -> bool:
+        """Daily profit ratchet. Returns True when equity has climbed another
+        ``daily_profit_target_pct`` above the last checkpoint -- the signal to
+        bank the winners and redeploy. Advances the checkpoint so it fires again
+        after the next increment (repeats through the day). Off when target=0."""
+        target = self.limits.daily_profit_target_pct
+        if target <= 0:
+            return False
+        if self._profit_checkpoint is None:
+            self._profit_checkpoint = equity
+            return False
+        if self._profit_checkpoint > 0 and equity >= self._profit_checkpoint * (1 + target):
+            self._profit_checkpoint = equity
+            return True
+        return False
 
     def observe_equity(self, equity: float) -> None:
         self._select_tier(equity)  # pick the risk limits for the current balance
