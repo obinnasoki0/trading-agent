@@ -20,6 +20,14 @@ from .models import Order, OrderType, Side
 from .risk import RiskManager
 
 
+def _fmt_price(p: float | None) -> str:
+    """Sub-cent assets (e.g. SHIB) round to 0.00 at 2 dp; show more precision."""
+    p = p or 0.0
+    if 0 < abs(p) < 0.01:
+        return f"{p:.8f}"
+    return f"{p:,.2f}"
+
+
 class TradingEngine:
     def __init__(self, broker: Broker, strategy: Strategy, risk: RiskManager,
                  data: DataProvider, symbols: list[str], lookback_days: int = 400,
@@ -285,10 +293,10 @@ class TradingEngine:
             else:
                 self._entry_price.pop(order.symbol, None)
             actions.append(f"[{tag}] {order.side.value} {filled.filled_quantity:.4f} "
-                           f"{order.symbol} @ {filled.filled_price or price:.2f} ({reason})")
+                           f"{order.symbol} @ {_fmt_price(filled.filled_price or price)} ({reason})")
         elif is_dry:
             actions.append(f"[{tag}] would {order.side.value} {order.quantity:.4f} "
-                           f"{order.symbol} @ {price:.2f} ({reason})")
+                           f"{order.symbol} @ {_fmt_price(price)} ({reason})")
         else:
             actions.append(f"[{tag}] {order.side.value} {order.symbol} not filled: "
                            f"{filled.status.value} {filled.broker_id or ''}")

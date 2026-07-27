@@ -25,6 +25,21 @@ from .base import Broker
 
 _CRYPTO_QUOTES = ("USDT", "USDC", "USD", "BTC")
 
+# Alpaca accepts order quantities to 6 decimals. A holding smaller than that
+# can't be ordered, so selling it is rejected ("qty must be > 0"). Crypto sells
+# leave such sub-precision *dust* (the position carries more decimals than we
+# send), which otherwise makes the engine retry an unsellable speck forever.
+_QTY_PRECISION = 6
+
+
+def _round_qty(qty: float) -> float:
+    return round(float(qty), _QTY_PRECISION)
+
+
+def _is_dust(qty: float) -> bool:
+    """True if the quantity is too small to place an order for (rounds to zero)."""
+    return _round_qty(abs(qty)) == 0.0
+
 
 def _normalize_symbol(symbol: str, asset_class: str = "") -> str:
     """Alpaca reports crypto positions as 'LTCUSD' but orders/config use
@@ -103,8 +118,13 @@ class AlpacaBroker(Broker):
     def positions(self) -> dict[str, Position]:
         out: dict[str, Position] = {}
         for p in self._client().get_all_positions():
+            qty = float(p.qty)
+            # Ignore untradeable dust: it can't be ordered, so reporting it only
+            # makes the engine retry an unsellable position and waste a slot.
+            if _is_dust(qty):
+                continue
             sym = _normalize_symbol(p.symbol, getattr(p, "asset_class", ""))
-            out[sym] = Position(sym, float(p.qty), float(p.avg_entry_price))
+            out[sym] = Position(sym, qty, float(p.avg_entry_price))
         return out
 
     def account(self) -> AccountState:
@@ -123,6 +143,15 @@ class AlpacaBroker(Broker):
         from alpaca.trading.enums import OrderSide, TimeInForce
         from alpaca.trading.requests import MarketOrderRequest
 
+        # Below Alpaca's order precision -> can't be placed. Reject cleanly instead
+        # of letting Alpaca return a confusing "qty must be > 0", which otherwise
+        # makes the engine retry the same dust every cycle.
+        qty = _round_qty(order.quantity)
+        if _is_dust(order.quantity):
+            order.status = OrderStatus.REJECTED
+            order.broker_id = "error: qty below tradable precision (dust)"
+            return order
+
         # Crypto is spot-only on Alpaca: a SELL that would open/extend a short is
         # invalid. The engine shouldn't route one here, but guard anyway.
         if self.asset_class == "crypto" and order.side is Side.SELL:
@@ -136,7 +165,7 @@ class AlpacaBroker(Broker):
         side = OrderSide.BUY if order.side is Side.BUY else OrderSide.SELL
         # Crypto supports GTC and trades 24/7; equities use DAY.
         tif = TimeInForce.GTC if self.asset_class == "crypto" else TimeInForce.DAY
-        req = MarketOrderRequest(symbol=order.symbol, qty=round(order.quantity, 6),
+        req = MarketOrderRequest(symbol=order.symbol, qty=qty,
                                  side=side, time_in_force=tif)
         try:
             resp = self._client().submit_order(req)
