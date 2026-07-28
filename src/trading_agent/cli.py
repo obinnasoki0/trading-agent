@@ -134,7 +134,8 @@ def cmd_backtest(args) -> int:
         data = {s: provider.history(s, start, end) for s in cfg.symbols}
         bt = PortfolioBacktester(strat, risk, cfg.starting_cash, cfg.commission,
                                  cfg.slippage_bps, allow_short=cfg.allow_short,
-                                 short_size_mult=cfg.short_size_mult)
+                                 short_size_mult=cfg.short_size_mult,
+                                 let_winners_run=cfg.let_winners_run)
         result = bt.run(data)
         label = f"portfolio {cfg.symbols}"
     else:
@@ -142,7 +143,8 @@ def cmd_backtest(args) -> int:
         data = provider.history(symbol, start, end)
         bt = Backtester(strat, risk, cfg.starting_cash, cfg.commission,
                         cfg.slippage_bps, allow_short=cfg.allow_short,
-                        short_size_mult=cfg.short_size_mult)
+                        short_size_mult=cfg.short_size_mult,
+                        let_winners_run=cfg.let_winners_run)
         result = bt.run(symbol, data)
         label = f"{symbol} ({len(data)} bars)"
 
@@ -162,7 +164,8 @@ def cmd_run(args) -> int:
     engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols,
                            cfg.lookback_days, cfg.max_positions,
                            allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult,
-                           profit_bank_cooldown_cycles=cfg.profit_bank_cooldown_cycles)
+                           profit_bank_cooldown_cycles=cfg.profit_bank_cooldown_cycles,
+                           let_winners_run=cfg.let_winners_run)
 
     actions = engine.step()
     acct = broker.account()
@@ -191,7 +194,8 @@ def cmd_loop(args) -> int:
     engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols,
                            cfg.lookback_days, max_positions,
                            allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult,
-                           profit_bank_cooldown_cycles=cfg.profit_bank_cooldown_cycles)
+                           profit_bank_cooldown_cycles=cfg.profit_bank_cooldown_cycles,
+                           let_winners_run=cfg.let_winners_run)
 
     interval = args.interval if args.interval is not None else cfg.interval_seconds
     session = Session(cfg.session)

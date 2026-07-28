@@ -91,6 +91,7 @@ class _ExecMixin:
             filled = self.broker.submit(decision.order)
             if filled.status.value == "filled":
                 self._entry_price[symbol] = filled.filled_price
+                self._peak_price[symbol] = filled.filled_price  # trailing-stop anchor
                 trades.append({"ts": str(ts), "side": side.value, "qty": filled.filled_quantity,
                                "price": filled.filled_price, "reason": "signal"})
 
@@ -104,6 +105,7 @@ class _ExecMixin:
         filled = self.broker.submit(order)
         if filled.status.value == "filled":
             self._entry_price.pop(symbol, None)
+            self._peak_price.pop(symbol, None)
             trades.append({"ts": str(ts), "side": side.value, "qty": filled.filled_quantity,
                            "price": filled.filled_price, "reason": reason})
 
@@ -112,13 +114,35 @@ class _ExecMixin:
         self._close(symbol, price, ts, trades, reason)
 
     def _check_stops(self, symbol, price, ts, trades) -> bool:
-        """Direction-aware stop-loss / take-profit. Returns True if it closed."""
+        """Direction-aware stop-loss / take-profit. Returns True if it closed.
+
+        With ``let_winners_run`` the fixed take-profit is replaced by a trailing
+        stop off the best price seen, so trends ride until they pull back."""
         pos = self.broker.positions().get(symbol)
         entry = self._entry_price.get(symbol)
         if not pos or not entry:
             return False
         stop = self.risk.limits.stop_loss_pct
         tp = self.risk.limits.take_profit_pct
+
+        if getattr(self, "let_winners_run", False):
+            peaks = self._peak_price
+            if pos.quantity > 0:  # long
+                peak = max(peaks.get(symbol, entry), price)
+                peaks[symbol] = peak
+                if price <= peak * (1 - stop):
+                    self._close(symbol, price, ts, trades, reason="trailing stop")
+                    peaks.pop(symbol, None)
+                    return True
+            else:  # short
+                trough = min(peaks.get(symbol, entry), price)
+                peaks[symbol] = trough
+                if price >= trough * (1 + stop):
+                    self._close(symbol, price, ts, trades, reason="trailing stop")
+                    peaks.pop(symbol, None)
+                    return True
+            return False
+
         if pos.quantity < 0:  # short
             if price >= entry * (1 + stop):
                 self._close(symbol, price, ts, trades, reason="stop-loss")
@@ -140,13 +164,15 @@ class Backtester(_ExecMixin):
     def __init__(self, strategy: Strategy, risk: RiskManager,
                  starting_cash: float = 10_000.0, commission: float = 0.0,
                  slippage_bps: float = 1.0, allow_short: bool = False,
-                 short_size_mult: float = 0.5):
+                 short_size_mult: float = 0.5, let_winners_run: bool = False):
         self.strategy = strategy
         self.risk = risk
         self.broker = PaperBroker(starting_cash, commission, slippage_bps)
         self._entry_price: dict[str, float] = {}
+        self._peak_price: dict[str, float] = {}
         self.allow_short = allow_short
         self.short_size_mult = short_size_mult
+        self.let_winners_run = let_winners_run
 
     def run(self, symbol: str, data: pd.DataFrame) -> BacktestResult:
         equity_points: list[tuple] = []
@@ -200,13 +226,15 @@ class PortfolioBacktester(_ExecMixin):
     def __init__(self, strategy: Strategy, risk: RiskManager,
                  starting_cash: float = 10_000.0, commission: float = 0.0,
                  slippage_bps: float = 1.0, allow_short: bool = False,
-                 short_size_mult: float = 0.5):
+                 short_size_mult: float = 0.5, let_winners_run: bool = False):
         self.strategy = strategy
         self.risk = risk
         self.broker = PaperBroker(starting_cash, commission, slippage_bps)
         self._entry_price: dict[str, float] = {}
+        self._peak_price: dict[str, float] = {}
         self.allow_short = allow_short
         self.short_size_mult = short_size_mult
+        self.let_winners_run = let_winners_run
 
     def run(self, data: dict[str, pd.DataFrame]) -> BacktestResult:
         if not data:

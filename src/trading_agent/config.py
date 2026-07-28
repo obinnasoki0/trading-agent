@@ -56,6 +56,9 @@ class AgentConfig:
     daily_profit_target_pct: float = 0.0
     # After banking a name, sit it out this many cycles before reopening it.
     profit_bank_cooldown_cycles: int = 3
+    # Let winners run: swap the fixed take-profit for a trailing stop so strong
+    # trends ride until they pull back or the analysis reverses (no fixed cap).
+    let_winners_run: bool = False
     data_source: str = "synthetic"  # synthetic | yfinance | csv
     lookback_days: int = 400
     # Autonomy: how the unattended loop behaves.

@@ -32,7 +32,8 @@ class TradingEngine:
     def __init__(self, broker: Broker, strategy: Strategy, risk: RiskManager,
                  data: DataProvider, symbols: list[str], lookback_days: int = 400,
                  max_positions: int = 0, allow_short: bool = False,
-                 short_size_mult: float = 0.5, profit_bank_cooldown_cycles: int = 3):
+                 short_size_mult: float = 0.5, profit_bank_cooldown_cycles: int = 3,
+                 let_winners_run: bool = False):
         self.broker = broker
         self.strategy = strategy
         self.risk = risk
@@ -48,7 +49,12 @@ class TradingEngine:
         # After the daily profit ratchet banks a name, don't reopen it for this
         # many cycles -- forces rotation into fresh signals instead of rebuying.
         self.profit_bank_cooldown_cycles = profit_bank_cooldown_cycles
+        # Let winners run: replace the fixed take-profit with a TRAILING stop, so a
+        # position rides as long as the trend holds and only exits on a pullback
+        # from its peak or an analysis reversal (handled in _act_on_signal).
+        self.let_winners_run = let_winners_run
         self._entry_price: dict[str, float] = {}
+        self._peak_price: dict[str, float] = {}  # best price since entry (trailing)
         self._cooldown: dict[str, int] = {}  # symbol -> cycle it's tradable again
         self._cycle = 0
         self._day: str | None = None
@@ -161,6 +167,28 @@ class TradingEngine:
 
         stop = self.risk.limits.stop_loss_pct
         tp = self.risk.limits.take_profit_pct
+
+        if self.let_winners_run:
+            # Trailing stop off the best price seen -> ride the trend, lock gains,
+            # exit only on a pullback. No fixed cap; a reversal exit still fires in
+            # _act_on_signal when the blended (tech+news+fund) signal turns.
+            if pos.quantity > 0:  # LONG
+                peak = max(self._peak_price.get(symbol, entry), price)
+                self._peak_price[symbol] = peak
+                if price <= peak * (1 - stop):
+                    self._submit(symbol, Side.SELL, pos.quantity, actions,
+                                 reason=f"trailing stop ({stop:.0%} off peak {_fmt_price(peak)})")
+                    return True
+            else:  # SHORT
+                trough = min(self._peak_price.get(symbol, entry), price)
+                self._peak_price[symbol] = trough
+                if price >= trough * (1 + stop):
+                    self._submit(symbol, Side.BUY, abs(pos.quantity), actions,
+                                 reason=f"trailing stop ({stop:.0%} off low {_fmt_price(trough)})")
+                    return True
+            return False
+
+        # Fixed mode: hard stop from entry + fixed take-profit.
         if pos.quantity < 0:  # SHORT: profits when price falls, loses when it rises
             if price >= entry * (1 + stop):
                 self._submit(symbol, Side.BUY, abs(pos.quantity), actions, reason="stop-loss (short)")
@@ -290,8 +318,10 @@ class TradingEngine:
             # short entries (a SELL) track their entry price correctly.
             if opening:
                 self._entry_price[order.symbol] = filled.filled_price or price
+                self._peak_price[order.symbol] = filled.filled_price or price
             else:
                 self._entry_price.pop(order.symbol, None)
+                self._peak_price.pop(order.symbol, None)
             actions.append(f"[{tag}] {order.side.value} {filled.filled_quantity:.4f} "
                            f"{order.symbol} @ {_fmt_price(filled.filled_price or price)} ({reason})")
         elif is_dry:

@@ -152,6 +152,28 @@ keeps scanning — the freed cash and slots rotate into the next strong signals.
   fixed gain) and from the daily-loss halt (the downside brake). Together they
   give you a hunt-all-day loop that locks in gains as it goes.
 
+## Let winners run
+
+Off by default, the agent exits a winner at the fixed `take_profit_pct`. Set
+`let_winners_run: true` and that cap is replaced by a **trailing stop**: the
+position rides as long as the trend holds and only exits when price pulls back
+`stop_loss_pct` from its **peak**, or when the analysis reverses (the blended
+tech+news+fundamentals signal turns against it). The hard stop-loss still
+protects a position that never gets going. Use this when you'd rather ride a
+strong move than cap it — it pairs naturally with the blended strategy, since
+the reversal exit is what decides "the thesis is over," not a fixed number.
+
+## Continuous, multi-factor monitoring
+
+Every cycle the engine re-runs the **full strategy** on each open position before
+looking for new ones — so whatever factors you've enabled keep watching your
+open trades, not just entries. Turn on `news` and `fundamentals` and the base
+technical strategy is automatically wrapped in the [blended](#news--sentiment)
+signal (`tech + news + fundamentals`); a held position is then re-scored on all
+three each cycle and closed if that blend turns against it. Fundamentals are
+company-quality metrics (equities only — crypto has no equivalent, so a crypto
+loop runs `tech + news`).
+
 ## Architecture
 
 ```

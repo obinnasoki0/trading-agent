@@ -54,6 +54,14 @@ interval_seconds: 900          # seconds between decision cycles
 daily_profit_target_pct: 0.0   # e.g. 0.02 = bank winners on every +2% day-move
 profit_bank_cooldown_cycles: 3 # cycles a banked name waits before it can reopen
 
+# --- Let winners run --------------------------------------------------------
+# false: exit a winner at the fixed take_profit_pct (e.g. +8%), always.
+# true: replace that cap with a TRAILING stop off the best price seen, so a
+# strong trend rides until it pulls back stop_loss_pct from its peak OR the
+# analysis reverses (blended tech+news+fundamentals signal turns against it).
+# This is the "hold while analysis still favors it, don't cap the upside" mode.
+let_winners_run: false
+
 # --- News / sentiment tilt (current events, geopolitics, tech, banking) ----
 news:
   enabled: false               # true => blend headline sentiment with the technical signal
