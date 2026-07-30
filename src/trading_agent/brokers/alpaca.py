@@ -17,6 +17,7 @@ Install: pip install "trading-agent[alpaca]"
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime
 
@@ -30,10 +31,15 @@ _CRYPTO_QUOTES = ("USDT", "USDC", "USD", "BTC")
 # leave such sub-precision *dust* (the position carries more decimals than we
 # send), which otherwise makes the engine retry an unsellable speck forever.
 _QTY_PRECISION = 6
+_QTY_SCALE = 10 ** _QTY_PRECISION
 
 
 def _round_qty(qty: float) -> float:
-    return round(float(qty), _QTY_PRECISION)
+    """Truncate (floor) to Alpaca's order precision -- never round UP. Rounding a
+    full-position sell up past the held amount (e.g. ...955599 -> ...956) makes
+    Alpaca reject it as 'insufficient balance', so we always round down and leave
+    the sub-precision remainder (which _is_dust then ignores)."""
+    return math.floor(abs(float(qty)) * _QTY_SCALE) / _QTY_SCALE
 
 
 def _is_dust(qty: float) -> bool:

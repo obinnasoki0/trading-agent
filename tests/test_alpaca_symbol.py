@@ -33,6 +33,10 @@ def test_dust_detection():
     assert _is_dust(0.15) is False
 
 
-def test_round_qty_matches_alpaca_precision():
-    assert _round_qty(1.123456789) == 1.123457
+def test_round_qty_truncates_never_rounds_up():
+    # Must floor, not round -- rounding a full-position sell UP past the held
+    # amount makes Alpaca reject it as "insufficient balance".
+    assert _round_qty(1.123456789) == 1.123456          # not 1.123457
     assert _round_qty(0.0000004) == 0.0
+    # The real SHIB case: held ...955599 must never become ...956.
+    assert _round_qty(1_927_646_557.367955599) <= 1_927_646_557.367955599
