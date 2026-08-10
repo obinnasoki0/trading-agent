@@ -117,18 +117,21 @@ class AlpacaData(DataProvider):
             raise RuntimeError('Install the Alpaca SDK: pip install "trading-agent[alpaca]"') from exc
 
         key, secret = os.getenv("ALPACA_API_KEY"), os.getenv("ALPACA_SECRET_KEY")
+        # Equities: translate Yahoo-style class shares to Alpaca's dot form
+        # ('BRK-B' -> 'BRK.B'); crypto keeps its slashed pair unchanged.
+        req_symbol = symbol if self.asset_class == "crypto" else symbol.replace("-", ".")
         if self.asset_class == "crypto":
             from alpaca.data.historical import CryptoHistoricalDataClient
             from alpaca.data.requests import CryptoBarsRequest
             client = CryptoHistoricalDataClient(key, secret) if key else CryptoHistoricalDataClient()
-            req = CryptoBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+            req = CryptoBarsRequest(symbol_or_symbols=req_symbol, timeframe=TimeFrame.Day,
                                     start=start, end=end)
             bars = client.get_crypto_bars(req)
         else:
             from alpaca.data.historical import StockHistoricalDataClient
             from alpaca.data.requests import StockBarsRequest
             client = StockHistoricalDataClient(key, secret)
-            req = StockBarsRequest(symbol_or_symbols=symbol, timeframe=TimeFrame.Day,
+            req = StockBarsRequest(symbol_or_symbols=req_symbol, timeframe=TimeFrame.Day,
                                    start=start, end=end)
             bars = client.get_stock_bars(req)
 
@@ -136,7 +139,7 @@ class AlpacaData(DataProvider):
         if df is None or df.empty:
             raise RuntimeError(f"No Alpaca data for {symbol}.")
         if isinstance(df.index, pd.MultiIndex):  # (symbol, timestamp) -> timestamp
-            df = df.xs(symbol, level=0)
+            df = df.xs(req_symbol, level=0)
         df.columns = [str(c).lower() for c in df.columns]
         return df[["open", "high", "low", "close", "volume"]]
 

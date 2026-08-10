@@ -47,6 +47,19 @@ def _is_dust(qty: float) -> bool:
     return _round_qty(abs(qty)) == 0.0
 
 
+def _equity_to_alpaca(symbol: str) -> str:
+    """Universe/config use Yahoo-style class shares ('BRK-B'); Alpaca wants a dot
+    ('BRK.B'). Convert for outbound data/order requests. Ordinary tickers have no
+    dash, so they pass through unchanged."""
+    return str(symbol).replace("-", ".")
+
+
+def _equity_from_alpaca(symbol: str) -> str:
+    """Convert Alpaca's 'BRK.B' back to the 'BRK-B' the engine tracks, so a held
+    position matches its universe symbol (ordinary tickers have no dot)."""
+    return str(symbol).replace(".", "-")
+
+
 def _normalize_symbol(symbol: str, asset_class: str = "") -> str:
     """Alpaca reports crypto positions as 'LTCUSD' but orders/config use
     'LTC/USD'. Insert the slash so position lookups match the traded symbol --
@@ -115,10 +128,12 @@ class AlpacaBroker(Broker):
         if self.asset_class == "crypto":
             from alpaca.data.requests import CryptoLatestTradeRequest
             resp = data.get_crypto_latest_trade(CryptoLatestTradeRequest(symbol_or_symbols=symbol))
+            key = symbol
         else:
             from alpaca.data.requests import StockLatestTradeRequest
-            resp = data.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=symbol))
-        trade = resp.get(symbol) if isinstance(resp, dict) else resp
+            key = _equity_to_alpaca(symbol)  # BRK-B -> BRK.B for the Alpaca request
+            resp = data.get_stock_latest_trade(StockLatestTradeRequest(symbol_or_symbols=key))
+        trade = resp.get(key) if isinstance(resp, dict) else resp
         return float(getattr(trade, "price", 0) or 0)
 
     def positions(self) -> dict[str, Position]:
@@ -129,7 +144,10 @@ class AlpacaBroker(Broker):
             # makes the engine retry an unsellable position and waste a slot.
             if _is_dust(qty):
                 continue
-            sym = _normalize_symbol(p.symbol, getattr(p, "asset_class", ""))
+            ac = getattr(p, "asset_class", "")
+            sym = _normalize_symbol(p.symbol, ac)
+            if "crypto" not in str(ac).lower():
+                sym = _equity_from_alpaca(sym)  # BRK.B -> BRK-B to match the universe
             out[sym] = Position(sym, qty, float(p.avg_entry_price))
         return out
 
@@ -171,7 +189,8 @@ class AlpacaBroker(Broker):
         side = OrderSide.BUY if order.side is Side.BUY else OrderSide.SELL
         # Crypto supports GTC and trades 24/7; equities use DAY.
         tif = TimeInForce.GTC if self.asset_class == "crypto" else TimeInForce.DAY
-        req = MarketOrderRequest(symbol=order.symbol, qty=qty,
+        req_symbol = order.symbol if self.asset_class == "crypto" else _equity_to_alpaca(order.symbol)
+        req = MarketOrderRequest(symbol=req_symbol, qty=qty,
                                  side=side, time_in_force=tif)
         try:
             resp = self._client().submit_order(req)

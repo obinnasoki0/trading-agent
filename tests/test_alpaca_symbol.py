@@ -2,7 +2,13 @@
 it ('LTC/USD'). If they don't match, the engine re-buys the same coin every
 cycle (it never sees the holding) and never stops out. This guards the fix."""
 
-from trading_agent.brokers.alpaca import _is_dust, _normalize_symbol, _round_qty
+from trading_agent.brokers.alpaca import (
+    _equity_from_alpaca,
+    _equity_to_alpaca,
+    _is_dust,
+    _normalize_symbol,
+    _round_qty,
+)
 
 
 def test_crypto_symbol_gets_slash_back():
@@ -31,6 +37,17 @@ def test_dust_detection():
     assert _is_dust(0.000001) is False       # exactly 1e-6 is tradable
     assert _is_dust(1_878_471_787.1685) is False  # a real SHIB holding
     assert _is_dust(0.15) is False
+
+
+def test_equity_class_share_symbol_translation():
+    # Yahoo/universe use 'BRK-B'; Alpaca uses 'BRK.B'. Convert out for requests
+    # and back for position matching. Ordinary tickers are untouched.
+    assert _equity_to_alpaca("BRK-B") == "BRK.B"
+    assert _equity_from_alpaca("BRK.B") == "BRK-B"
+    assert _equity_to_alpaca("AAPL") == "AAPL"
+    assert _equity_from_alpaca("AAPL") == "AAPL"
+    # Round-trip is stable.
+    assert _equity_from_alpaca(_equity_to_alpaca("BRK-B")) == "BRK-B"
 
 
 def test_round_qty_truncates_never_rounds_up():
