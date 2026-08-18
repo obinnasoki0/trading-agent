@@ -75,6 +75,10 @@ class Order:
     filled_quantity: float = 0.0
     broker_id: str | None = None
     created_at: datetime | None = None
+    # Dollar (notional) amount for a BUY, when the broker supports buying "$X
+    # worth" instead of a share count (e.g. Robinhood dollar_amount). Lets a small
+    # account place a clean fractional order. None => size by `quantity`.
+    dollar_amount: float | None = None
 
     @property
     def notional(self) -> float:

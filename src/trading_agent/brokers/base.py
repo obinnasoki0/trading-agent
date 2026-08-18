@@ -17,6 +17,9 @@ class Broker:
     #: True if this broker can hold short (negative) positions. Most can't
     #: (crypto spot, Robinhood MCP); the engine only opens shorts when this is set.
     supports_short: bool = False
+    #: True if BUY orders can be sized in dollars (notional) instead of shares --
+    #: lets a small account place clean fractional orders (e.g. Robinhood).
+    supports_notional: bool = False
 
     def account(self) -> AccountState:
         raise NotImplementedError

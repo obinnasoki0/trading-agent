@@ -46,7 +46,7 @@ import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from ..core.models import AccountState, Order, OrderStatus, Position, Side
+from ..core.models import AccountState, Order, OrderStatus, OrderType, Position, Side
 from .base import Broker
 from .robinhood_oauth import FileTokenStorage, build_oauth_provider
 
@@ -67,6 +67,9 @@ TOOL_MAP = {
 class RobinhoodMCPBroker(Broker):
     name = "robinhood_mcp"
     is_live = True
+    # Robinhood's place_equity_order accepts a dollar_amount (notional) for market
+    # orders, so a small account can buy "$X worth" instead of a share count.
+    supports_notional = True
 
     def __init__(self, allow_live: bool = False, dry_run: bool = True,
                  url: str | None = None, tool_map: dict | None = None,
@@ -223,13 +226,21 @@ class RobinhoodMCPBroker(Broker):
             order.status = OrderStatus.REJECTED
             order.broker_id = "dry-run"
             return order
+        # Prefer a dollar (notional) BUY when one was sized -- market orders only,
+        # per the MCP schema. Sells always go by share quantity so a position
+        # closes exactly (a dollar sell would leave odd-lot dust).
+        use_notional = (order.dollar_amount and order.dollar_amount > 0
+                        and order.side is Side.BUY
+                        and order.order_type is OrderType.MARKET)
+        sizing = ({"dollar_amount": f"{order.dollar_amount:.2f}"} if use_notional
+                  else {"quantity": str(round(order.quantity, 6))})
         try:
             res = self._call("place_order", {
                 "account_number": self._resolve_account_number(),
                 "symbol": order.symbol,
                 "side": order.side.value,
-                "quantity": str(round(order.quantity, 6)),
                 "type": order.order_type.value,
+                **sizing,
                 "ref_id": str(uuid.uuid4()),
                 **({"limit_price": str(order.limit_price)} if order.limit_price else {}),
             })

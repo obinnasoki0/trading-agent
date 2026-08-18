@@ -217,6 +217,11 @@ class TradingEngine:
         order = Order(symbol, side, qty, OrderType.MARKET, created_at=datetime.now())
         decision = self.risk.review(order, price, account)
         if decision.approved and decision.order:
+            # On a notional-capable broker, send the BUY as a dollar amount ("$X
+            # worth") -- cleaner than a tiny fractional share count on a small
+            # account. Derived from the risk-approved quantity, so all caps hold.
+            if side is Side.BUY and getattr(self.broker, "supports_notional", False):
+                decision.order.dollar_amount = round(decision.order.quantity * price, 2)
             self._submit_order(decision.order, price, actions, signal.reason, opening=True)
             return True, "ok"
         return False, f"{symbol}: {decision.reason}"
@@ -322,11 +327,13 @@ class TradingEngine:
             else:
                 self._entry_price.pop(order.symbol, None)
                 self._peak_price.pop(order.symbol, None)
+            amt = f" (~${order.dollar_amount:.2f})" if order.dollar_amount else ""
             actions.append(f"[{tag}] {order.side.value} {filled.filled_quantity:.4f} "
-                           f"{order.symbol} @ {_fmt_price(filled.filled_price or price)} ({reason})")
+                           f"{order.symbol}{amt} @ {_fmt_price(filled.filled_price or price)} ({reason})")
         elif is_dry:
+            amt = f" (~${order.dollar_amount:.2f})" if order.dollar_amount else ""
             actions.append(f"[{tag}] would {order.side.value} {order.quantity:.4f} "
-                           f"{order.symbol} @ {_fmt_price(price)} ({reason})")
+                           f"{order.symbol}{amt} @ {_fmt_price(price)} ({reason})")
         else:
             actions.append(f"[{tag}] {order.side.value} {order.symbol} not filled: "
                            f"{filled.status.value} {filled.broker_id or ''}")
