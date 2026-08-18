@@ -277,6 +277,16 @@ def cmd_verify_robinhood(args) -> int:
         print(f"\nCould not reach the Robinhood MCP: {exc}")
         print("Set ROBINHOOD_MCP_TOKEN (or connect via `claude mcp add robinhood-trading ...`).")
         return 1
+
+    if getattr(args, "schema", False):
+        # Dump each tool's accepted parameters -- lets us see whether the order
+        # tool takes a dollar amount/notional field or only a share quantity.
+        print("\n=== Tool input schemas ===")
+        for name, _desc, schema in broker.list_tool_schemas():
+            props = list((schema.get("properties") or {}).keys())
+            print(f"\n{name}: params={props}")
+            print(json.dumps(schema, indent=2)[:1500])
+        return 0
     try:
         acct = broker.account()
         print(f"\nRead-only check OK: cash=${acct.cash:,.2f} equity=${acct.equity:,.2f} "
@@ -337,6 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     v = sub.add_parser("verify-robinhood",
                        help="Discover + auto-map the official Robinhood MCP tools")
+    v.add_argument("--schema", action="store_true",
+                   help="Print each tool's accepted parameters (to check for notional/amount support).")
     v.set_defaults(func=cmd_verify_robinhood)
     return p
 

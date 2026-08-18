@@ -155,6 +155,17 @@ class RobinhoodMCPBroker(Broker):
     def list_tools(self) -> list[str]:
         return [name for name, _ in self.list_tool_details()]
 
+    def list_tool_schemas(self) -> list[tuple[str, str, dict]]:
+        """Discover (name, description, inputSchema) for every tool, so we can see
+        the exact accepted parameters (e.g. whether the order tool takes a
+        dollar 'amount'/'notional' field vs. only a share 'quantity')."""
+        async def _run():
+            async with self._open_session() as session:
+                tools = await session.list_tools()
+                return [(t.name, getattr(t, "description", "") or "",
+                         dict(getattr(t, "inputSchema", {}) or {})) for t in tools.tools]
+        return asyncio.run(_run())
+
     def discover_and_map(self, verbose: bool = True) -> dict:
         """Connect, list the real tools, and auto-map them to our operations by
         keyword. Updates ``self.tool_map`` in place and returns it.
