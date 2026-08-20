@@ -248,9 +248,19 @@ class RobinhoodMCPBroker(Broker):
             order.status = OrderStatus.REJECTED
             order.broker_id = f"error: {exc}"
             return order
+        if os.getenv("TRADING_DEBUG"):
+            print(f"  [debug] place_order raw response: {_result_payload(res)!r}")
         data = _extract_obj(res)
-        order.broker_id = data.get("id") or data.get("order_id")
-        order.status = OrderStatus.FILLED if order.broker_id else OrderStatus.REJECTED
+        # The order id can sit at the top level or nested inside the returned
+        # order object, so search recursively rather than only the top keys.
+        order.broker_id = _find_first(data, ("id", "order_id"))
+        if order.broker_id:
+            order.status = OrderStatus.FILLED
+        else:
+            order.status = OrderStatus.REJECTED
+            # Surface the real reason if the MCP gave one, instead of a bare "rejected".
+            reason = _find_first(data, ("reject_reason", "detail", "error", "message"))
+            order.broker_id = f"rejected: {reason}" if reason else "rejected"
         order.filled_quantity = order.quantity
         return order
 
@@ -359,6 +369,27 @@ def _unwrap(payload):
 def _extract_obj(res) -> dict:
     payload = _unwrap(_result_payload(res))
     return payload if isinstance(payload, dict) else {}
+
+
+def _find_first(obj, keys: tuple[str, ...]) -> str | None:
+    """Recursively search a nested dict/list for the first non-empty value under
+    any of ``keys``. Robinhood's order response may nest the order id (or a reject
+    reason) one level down, so a top-level lookup alone can miss it."""
+    if isinstance(obj, dict):
+        for k in keys:
+            v = obj.get(k)
+            if isinstance(v, (str, int)) and str(v).strip():
+                return str(v)
+        for v in obj.values():
+            found = _find_first(v, keys)
+            if found:
+                return found
+    elif isinstance(obj, list):
+        for item in obj:
+            found = _find_first(item, keys)
+            if found:
+                return found
+    return None
 
 
 def _extract_rows(res) -> list[dict]:
