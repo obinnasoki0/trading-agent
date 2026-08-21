@@ -352,6 +352,21 @@ def cmd_robinhood_scan(args) -> int:
         sid = broker.create_scan(preset=args.create_preset, title=f"agent-{args.create_preset}")
         print(f"Created scan id={sid}. Use it with `universe: scan:{sid}` in your config, "
               f"or preview it: trading-agent robinhood-scan --run {sid}")
+    elif args.create_quality:
+        # A quality screen: real listed stocks, $2B+ market cap, positive EPS --
+        # cuts the pennies/SPACs/microcaps that DAILY_GAINERS surfaces.
+        filters = [
+            {"filter_type": "FILTER_TYPE_INSTRUMENT_TYPE", "predicate": "PREDICATE_ANY_OF", "values": ["STOCK"]},
+            {"filter_type": "FILTER_TYPE_MARKET_CAP", "predicate": "PREDICATE_GREATER_THAN", "values": ["2000000000"]},
+            {"filter_type": "FILTER_TYPE_EPS", "predicate": "PREDICATE_GREATER_THAN", "values": ["0"]},
+        ]
+        sid = broker.create_scan(preset="INITIAL", filters=filters, title="agent-quality")
+        if sid:
+            print(f"Created quality scan id={sid}. Preview it: trading-agent robinhood-scan --run {sid}")
+            print(f"Then wire it in: universe: scan:{sid}")
+        else:
+            print("Quality scan creation returned no id -- rerun with $env:TRADING_DEBUG='1' "
+                  "and paste the [debug] create_scan response so I can fix the filter format.")
     else:
         print("Choose one: --list | --run <scan_id> | --create-preset <NAME> | --specs")
         print("Presets: DAILY_GAINERS, DAILY_LOSERS, HIGH_OPTIONS_VOLUME_IV, UPCOMING_EARNINGS")
@@ -417,6 +432,8 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument("--run", help="Run a scan by id and print the matching symbols.")
     rs.add_argument("--create-preset", dest="create_preset",
                     help="Create a preset scan (DAILY_GAINERS, UPCOMING_EARNINGS, ...).")
+    rs.add_argument("--create-quality", dest="create_quality", action="store_true",
+                    help="Create a quality screen (listed stocks, $2B+ cap, positive EPS).")
     rs.set_defaults(func=cmd_robinhood_scan)
     return p
 

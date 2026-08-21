@@ -303,8 +303,10 @@ class RobinhoodMCPBroker(Broker):
             payload["columns"] = columns
         if title:
             payload["title"] = title
-        return _find_first(_extract_obj(self._call("create_scan", payload)),
-                           ("scan_id", "id"))
+        res = self._call("create_scan", payload)
+        if os.getenv("TRADING_DEBUG"):
+            print(f"  [debug] create_scan raw response: {str(_result_payload(res))[:900]}")
+        return _find_first(_extract_obj(res), ("scan_id", "id"))
 
     def run_scan(self, scan_id: str) -> list[str]:
         """Execute a saved scan and return the matching symbols (uppercased)."""
