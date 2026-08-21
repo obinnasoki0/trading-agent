@@ -117,7 +117,14 @@ def load(path: str | None = None) -> AgentConfig:
         # position cap wasn't set, so it doesn't try to buy the whole list.
         if raw.get("universe"):
             from .core.universe import resolve
-            raw["symbols"] = resolve(raw["universe"])
+            uni = raw["universe"]
+            # 'scan:<id>' / 'preset:<NAME>' are resolved LIVE from the broker's
+            # scanner at loop time, not here; keep a static fallback list for when
+            # the scan is unavailable.
+            if isinstance(uni, str) and uni.split(":", 1)[0] in ("scan", "preset"):
+                raw["symbols"] = resolve("largecap")
+            else:
+                raw["symbols"] = resolve(uni)
             if not raw.get("max_positions"):
                 raw["max_positions"] = 5
         return AgentConfig(risk=risk, news=news, fundamentals=fundamentals,

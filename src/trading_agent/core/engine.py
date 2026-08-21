@@ -33,12 +33,16 @@ class TradingEngine:
                  data: DataProvider, symbols: list[str], lookback_days: int = 400,
                  max_positions: int = 0, allow_short: bool = False,
                  short_size_mult: float = 0.5, profit_bank_cooldown_cycles: int = 3,
-                 let_winners_run: bool = False):
+                 let_winners_run: bool = False, universe_provider=None):
         self.broker = broker
         self.strategy = strategy
         self.risk = risk
         self.data = data
         self.symbols = symbols
+        # Optional callable returning the current candidate symbols (e.g. a live
+        # Robinhood scan). When set, each full scan refreshes the universe from it,
+        # unioned with held names so exits are always evaluated.
+        self.universe_provider = universe_provider
         self.lookback_days = lookback_days
         # 0 = evaluate/buy every symbol independently; >0 = rank the universe and
         # hold at most this many names (cross-sectional selection).
@@ -61,6 +65,29 @@ class TradingEngine:
 
     def _on_cooldown(self, symbol: str) -> bool:
         return self._cooldown.get(symbol, 0) > self._cycle
+
+    def _resolve_universe(self, actions: list[str]) -> list[str]:
+        """The candidate list for this cycle. With a universe_provider (e.g. a
+        Robinhood scan), refresh from it; always union in held names so a holding
+        that drops off the scan still gets its exit checked. Falls back to the
+        static symbols if the provider errors or returns nothing."""
+        if self.universe_provider is None:
+            return self.symbols
+        try:
+            scanned = list(self.universe_provider() or [])
+        except Exception as exc:
+            actions.append(f"universe scan failed ({type(exc).__name__}); using fallback list")
+            scanned = []
+        if not scanned:
+            scanned = self.symbols
+        held = list(self.broker.positions().keys())
+        seen: set[str] = set()
+        out: list[str] = []
+        for s in held + scanned:  # held first so exits are always evaluated
+            if s not in seen:
+                seen.add(s)
+                out.append(s)
+        return out
 
     def _can_short(self) -> bool:
         return self.allow_short and getattr(self.broker, "supports_short", False)
@@ -95,7 +122,7 @@ class TradingEngine:
                              reason=f"KILL SWITCH: {kill}")
             return actions
 
-        universe = symbols if symbols is not None else self.symbols
+        universe = symbols if symbols is not None else self._resolve_universe(actions)
         if self.max_positions and symbols is None:
             self._ranked_step(universe, actions)
         else:

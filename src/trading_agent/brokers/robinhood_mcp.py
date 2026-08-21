@@ -61,6 +61,11 @@ TOOL_MAP = {
     "quote": "get_equity_quotes",
     "place_order": "place_equity_order",
     "cancel_order": "cancel_equity_order",
+    # Scanner / screener tools: pull a dynamic candidate list instead of a fixed universe.
+    "list_scans": "get_scans",
+    "run_scan": "run_scan",
+    "create_scan": "create_scan",
+    "scanner_specs": "get_scanner_filter_specs",
 }
 
 
@@ -269,6 +274,55 @@ class RobinhoodMCPBroker(Broker):
             "account_number": self._resolve_account_number(),
             "order_id": broker_id,
         })
+
+    # -- scanner / screener ----------------------------------------------
+    def scanner_filter_specs(self):
+        """Raw list of valid scanner filter types (call before building a scan)."""
+        return _result_payload(self._call("scanner_specs", {}))
+
+    def list_scans(self) -> list[dict]:
+        """The user's saved scans as [{id, title, ...}, ...]."""
+        rows = _extract_rows(self._call("list_scans", {}))
+        out = []
+        for r in rows:
+            if isinstance(r, dict):
+                out.append({"id": r.get("id") or r.get("scan_id"),
+                            "title": r.get("title") or r.get("name") or ""})
+        return out
+
+    def create_scan(self, preset: str | None = None, filters: list | None = None,
+                    columns: list | None = None, title: str | None = None) -> str | None:
+        """Create a saved scan; returns its id. Use a preset (DAILY_GAINERS,
+        DAILY_LOSERS, HIGH_OPTIONS_VOLUME_IV, UPCOMING_EARNINGS) or custom filters."""
+        payload: dict = {}
+        if preset:
+            payload["preset"] = preset
+        if filters:
+            payload["filters"] = filters
+        if columns:
+            payload["columns"] = columns
+        if title:
+            payload["title"] = title
+        return _find_first(_extract_obj(self._call("create_scan", payload)),
+                           ("scan_id", "id"))
+
+    def run_scan(self, scan_id: str) -> list[str]:
+        """Execute a saved scan and return the matching symbols (uppercased)."""
+        rows = _extract_rows(self._call("run_scan", {"scan_id": scan_id}))
+        if os.getenv("TRADING_DEBUG"):
+            print(f"  [debug] run_scan raw rows: {rows[:3]!r}")
+        syms: list[str] = []
+        for r in rows:
+            sym = None
+            if isinstance(r, dict):
+                sym = r.get("symbol") or r.get("ticker") or _find_first(r, ("symbol", "ticker"))
+            elif isinstance(r, str):
+                sym = r
+            if sym:
+                s = str(sym).strip().upper()
+                if s and s not in syms:
+                    syms.append(s)
+        return syms
 
 
 # -- auto-mapping: match discovered tool names to our operations -------------

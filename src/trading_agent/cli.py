@@ -111,6 +111,31 @@ def _build_broker(cfg: AgentConfig, understood: bool):
     return brokers.build(cfg.broker, cfg, understood)
 
 
+def _scan_universe_provider(cfg: AgentConfig, broker):
+    """If `universe` is 'scan:<id>' or 'preset:<NAME>', return a callable that
+    pulls live candidates from the broker's scanner each cycle; else None."""
+    uni = cfg.universe
+    if not isinstance(uni, str) or ":" not in uni:
+        return None
+    kind, _, val = uni.partition(":")
+    if kind not in ("scan", "preset"):
+        return None
+    if not hasattr(broker, "run_scan"):
+        print(f"universe '{uni}' needs the Robinhood broker (has a scanner); using the static list.")
+        return None
+    broker.discover_and_map(verbose=False)
+    scan_id = val
+    if kind == "preset":
+        scan_id = broker.create_scan(preset=val, title=f"agent-{val}")
+        if not scan_id:
+            print(f"could not create preset scan '{val}'; using the static list.")
+            return None
+        print(f"created Robinhood scan '{val}' (id={scan_id}); refreshing candidates each cycle.")
+    else:
+        print(f"using Robinhood scan id={scan_id}; refreshing candidates each cycle.")
+    return lambda: broker.run_scan(scan_id)
+
+
 def _mode(broker) -> str:
     return "LIVE" if broker.is_live and getattr(broker, "allow_live", False) else "PAPER/DRY-RUN"
 
@@ -191,11 +216,12 @@ def cmd_loop(args) -> int:
 
     max_positions = args.max_positions if args.max_positions is not None else cfg.max_positions
     strat = _build_strategy(cfg, news_source=news_source)
+    provider = _scan_universe_provider(cfg, broker)
     engine = TradingEngine(broker, strat, risk, _data_provider(cfg), cfg.symbols,
                            cfg.lookback_days, max_positions,
                            allow_short=cfg.allow_short, short_size_mult=cfg.short_size_mult,
                            profit_bank_cooldown_cycles=cfg.profit_bank_cooldown_cycles,
-                           let_winners_run=cfg.let_winners_run)
+                           let_winners_run=cfg.let_winners_run, universe_provider=provider)
 
     interval = args.interval if args.interval is not None else cfg.interval_seconds
     session = Session(cfg.session)
@@ -299,6 +325,39 @@ def cmd_verify_robinhood(args) -> int:
     return 0
 
 
+def cmd_robinhood_scan(args) -> int:
+    """Explore/manage Robinhood scans (screeners) for a dynamic universe.
+    Use --list to see saved scans, --run <id> to preview a scan's symbols,
+    --create-preset <NAME> to make a preset scan, --specs to list filter types."""
+    from .brokers.robinhood_mcp import RobinhoodMCPBroker
+
+    broker = RobinhoodMCPBroker()
+    try:
+        broker.discover_and_map(verbose=False)
+    except Exception as exc:
+        print(f"Could not reach the Robinhood MCP: {exc}")
+        return 1
+    if args.specs:
+        print(json.dumps(broker.scanner_filter_specs(), indent=2)[:4000])
+    elif args.list:
+        scans = broker.list_scans()
+        if not scans:
+            print("No saved scans. Create one: --create-preset DAILY_GAINERS")
+        for s in scans:
+            print(f"  {s['id']}   {s['title']}")
+    elif args.run:
+        syms = broker.run_scan(args.run)
+        print(f"{len(syms)} symbols: {syms}")
+    elif args.create_preset:
+        sid = broker.create_scan(preset=args.create_preset, title=f"agent-{args.create_preset}")
+        print(f"Created scan id={sid}. Use it with `universe: scan:{sid}` in your config, "
+              f"or preview it: trading-agent robinhood-scan --run {sid}")
+    else:
+        print("Choose one: --list | --run <scan_id> | --create-preset <NAME> | --specs")
+        print("Presets: DAILY_GAINERS, DAILY_LOSERS, HIGH_OPTIONS_VOLUME_IV, UPCOMING_EARNINGS")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="trading-agent", description="Risk-first trading agent")
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
@@ -350,6 +409,15 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--schema", action="store_true",
                    help="Print each tool's accepted parameters (to check for notional/amount support).")
     v.set_defaults(func=cmd_verify_robinhood)
+
+    rs = sub.add_parser("robinhood-scan",
+                        help="Explore/manage Robinhood scans for a dynamic (scanner-driven) universe")
+    rs.add_argument("--list", action="store_true", help="List saved scans and their ids.")
+    rs.add_argument("--specs", action="store_true", help="List valid scanner filter types.")
+    rs.add_argument("--run", help="Run a scan by id and print the matching symbols.")
+    rs.add_argument("--create-preset", dest="create_preset",
+                    help="Create a preset scan (DAILY_GAINERS, UPCOMING_EARNINGS, ...).")
+    rs.set_defaults(func=cmd_robinhood_scan)
     return p
 
 

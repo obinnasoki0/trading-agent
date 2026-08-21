@@ -14,6 +14,14 @@ strategy_params:
 # max_positions: 5             # hold at most 5 names (defaults to 5 if a universe is set)
 # NOTE: free data rate-limits on big scans -- keep universes in the tens-to-low-
 # hundreds, or move to a paid/batch feed for "everything".
+#
+# DYNAMIC (Robinhood only): drive the candidate list from a live Robinhood
+# scanner instead of a fixed list -- refreshed every cycle, so the agent hunts
+# whatever currently screens (gainers, upcoming earnings, custom growth filters).
+#   universe: preset:DAILY_GAINERS   # DAILY_GAINERS|DAILY_LOSERS|UPCOMING_EARNINGS|HIGH_OPTIONS_VOLUME_IV
+#   universe: scan:<your-scan-id>    # a saved custom scan (see `trading-agent robinhood-scan --list`)
+# Explore first:  trading-agent robinhood-scan --list | --run <id> | --create-preset DAILY_GAINERS
+# Held names are always included so exits still fire even if a holding drops off the scan.
 
 starting_cash: 10000
 commission: 0.0
