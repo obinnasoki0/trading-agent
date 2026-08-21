@@ -308,9 +308,13 @@ class RobinhoodMCPBroker(Broker):
 
     def run_scan(self, scan_id: str) -> list[str]:
         """Execute a saved scan and return the matching symbols (uppercased)."""
-        rows = _extract_rows(self._call("run_scan", {"scan_id": scan_id}))
+        res = self._call("run_scan", {"scan_id": scan_id})
         if os.getenv("TRADING_DEBUG"):
-            print(f"  [debug] run_scan raw rows: {rows[:3]!r}")
+            payload = _result_payload(res)
+            keys = list(payload.keys()) if isinstance(payload, dict) else type(payload).__name__
+            print(f"  [debug] run_scan payload keys={keys}")
+            print(f"  [debug] run_scan raw payload: {str(payload)[:900]}")
+        rows = _extract_rows(res)
         syms: list[str] = []
         for r in rows:
             sym = None
@@ -451,9 +455,25 @@ def _extract_rows(res) -> list[dict]:
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        for key in ("positions", "results", "data", "items"):
+        for key in ("positions", "results", "data", "items", "rows",
+                    "instruments", "stocks", "securities", "matches", "records"):
             if isinstance(payload.get(key), list):
                 return payload[key]
+        # Last resort: the first list-valued field anywhere in the object.
+        for val in payload.values():
+            if isinstance(val, list) and val:
+                return val
+            if isinstance(val, dict):
+                nested = _extract_rows_from(val)
+                if nested:
+                    return nested
+    return []
+
+
+def _extract_rows_from(payload: dict) -> list:
+    for key in ("results", "rows", "instruments", "stocks", "items", "records"):
+        if isinstance(payload.get(key), list):
+            return payload[key]
     return []
 
 
