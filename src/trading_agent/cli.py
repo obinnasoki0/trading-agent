@@ -367,6 +367,23 @@ def cmd_robinhood_scan(args) -> int:
         else:
             print("Quality scan creation returned no id -- rerun with $env:TRADING_DEBUG='1' "
                   "and paste the [debug] create_scan response so I can fix the filter format.")
+    elif args.create_growth:
+        # Growth tilt: real listed stocks, $2B+ cap, high gross margin (>=50%) --
+        # the durable-margin economics that mark strong, scalable, "good future"
+        # businesses, without the penny/SPAC junk.
+        filters = [
+            {"filter_type": "FILTER_TYPE_INSTRUMENT_TYPE", "predicate": "PREDICATE_ANY_OF", "values": ["STOCK"]},
+            {"filter_type": "FILTER_TYPE_MARKET_CAP", "predicate": "PREDICATE_GREATER_THAN", "values": ["2000000000"]},
+            {"filter_type": "FILTER_TYPE_GROSS_MARGIN", "predicate": "PREDICATE_GREATER_THAN", "values": ["50"]},
+        ]
+        sid = broker.create_scan(preset="INITIAL", filters=filters, title="agent-growth")
+        if sid:
+            print(f"Created growth scan id={sid}. Preview it: trading-agent robinhood-scan --run {sid}")
+            print(f"Then wire it in: universe: scan:{sid}")
+        else:
+            print("Growth scan creation returned no id -- rerun with $env:TRADING_DEBUG='1' "
+                  "and paste the [debug] create_scan response so I can fix the filter format "
+                  "(the gross-margin value may need to be 0.5 instead of 50).")
     else:
         print("Choose one: --list | --run <scan_id> | --create-preset <NAME> | --specs")
         print("Presets: DAILY_GAINERS, DAILY_LOSERS, HIGH_OPTIONS_VOLUME_IV, UPCOMING_EARNINGS")
@@ -434,6 +451,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Create a preset scan (DAILY_GAINERS, UPCOMING_EARNINGS, ...).")
     rs.add_argument("--create-quality", dest="create_quality", action="store_true",
                     help="Create a quality screen (listed stocks, $2B+ cap, positive EPS).")
+    rs.add_argument("--create-growth", dest="create_growth", action="store_true",
+                    help="Create a growth screen (listed stocks, $2B+ cap, gross margin >=50%%).")
     rs.set_defaults(func=cmd_robinhood_scan)
     return p
 
