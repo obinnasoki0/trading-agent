@@ -90,7 +90,10 @@ class YFinanceData(DataProvider):
                 "or use SyntheticData / CSVData instead."
             ) from exc
 
-        df = yf.download(symbol, start=start, end=end, interval=self.interval,
+        # Yahoo writes class shares with a dash ('BRK-B'); other sources (Robinhood
+        # scans, Alpaca) use a dot ('BRK.B'). Translate so class shares still price.
+        yf_symbol = symbol.replace(".", "-")
+        df = yf.download(yf_symbol, start=start, end=end, interval=self.interval,
                          progress=False, auto_adjust=True)
         if df.empty:
             raise RuntimeError(f"No data returned for {symbol}.")
