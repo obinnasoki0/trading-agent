@@ -97,9 +97,17 @@ def _wait_for_callback(port: int, timeout: float = 300.0) -> tuple[str, str | No
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
-            qs = urllib.parse.urlparse(self.path).query
-            params = urllib.parse.parse_qs(qs)
-            captured["code"] = (params.get("code") or [None])[0]
+            parsed = urllib.parse.urlparse(self.path)
+            params = urllib.parse.parse_qs(parsed.query)
+            code = (params.get("code") or [None])[0]
+            # Ignore anything that isn't the real callback carrying a code --
+            # browsers fire /favicon.ico and other bare requests that would race
+            # the real redirect and blank out the captured code.
+            if not code:
+                self.send_response(204)
+                self.end_headers()
+                return
+            captured["code"] = code
             captured["state"] = (params.get("state") or [None])[0]
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
